@@ -1,0 +1,40 @@
+[package]
+name = "tree-engine"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[lints.rust]
+unused = "deny"
+dead_code = "deny"
+
+[dependencies]
+bytemuck = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
+web-sys = { version = "0.3", features = [
+    "HtmlCanvasElement",
+    "OffscreenCanvas",
+    "Window",
+    "WorkerGlobalScope",
+    "Performance",
+] }
+wgpu = { version = "26", features = ["webgpu", "webgl", "wgsl"] }
+
+[dev-dependencies]
+naga = { version = "26", features = ["wgsl-in"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+
+# The ecology integration tests (tests/ecology.rs) run tens of thousands of
+# sim ticks; a bit of optimization keeps `cargo test` in the fast-inner-loop
+# bracket without release-build compile times.
+[profile.dev]
+opt-level = 1

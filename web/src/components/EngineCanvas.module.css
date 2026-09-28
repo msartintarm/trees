@@ -1,0 +1,162 @@
+.wrap {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  background: #0b0e13;
+}
+
+.canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  touch-action: none;
+  cursor: crosshair;
+}
+
+.panel {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  background: rgba(12, 17, 24, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 10px;
+  color: #e6edf3;
+  font: 13px/1.4 system-ui, sans-serif;
+  user-select: none;
+  backdrop-filter: blur(6px);
+  max-width: 270px;
+}
+
+.title {
+  font-weight: 600;
+  font-size: 14px;
+  margin: 0;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.label {
+  opacity: 0.65;
+  min-width: 44px;
+}
+
+.panel button {
+  background: #1d2734;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.panel button:hover {
+  background: #27344a;
+}
+
+.panel button.active {
+  background: #2f6b3a;
+  border-color: #4caf6d;
+}
+
+.panel input[type="number"] {
+  width: 90px;
+  background: #10161f;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 4px 6px;
+  font: inherit;
+}
+
+.hud {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  padding: 6px 12px;
+  background: rgba(12, 17, 24, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 8px;
+  color: #e6edf3;
+  font: 13px/1.5 ui-monospace, monospace;
+  user-select: none;
+  white-space: nowrap;
+}
+
+.hint {
+  opacity: 0.55;
+  font-size: 12px;
+}
+
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.params summary {
+  cursor: pointer;
+  opacity: 0.8;
+  font-weight: 600;
+}
+
+.paramRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.paramRow span {
+  opacity: 0.75;
+}
+
+.paramRow em {
+  font-style: normal;
+  color: #e3b341;
+  margin-left: 2px;
+}
+
+.preset {
+  max-width: 170px;
+  background: #10161f;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
+}
+
+.paramRow input {
+  width: 76px;
+  background: #10161f;
+  color: #e6edf3;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font: inherit;
+}
+
+.error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  color: #ffb4b4;
+  background: rgba(11, 14, 19, 0.92);
+  font: 14px/1.6 ui-monospace, monospace;
+  white-space: pre-wrap;
+}
