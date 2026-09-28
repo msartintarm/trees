@@ -22,16 +22,19 @@ export function speedLabel(s: StatsSnapshot): string {
   return selected;
 }
 
-/** Biodiversity as the effective number of plant types (of 8). */
+/** Biodiversity as the effective number of plant types (of 8), whole map
+ * and within a local 16×16 patch — the gap is how much the landscape's
+ * regions differ. */
 export function diversityLabel(s: StatsSnapshot): string {
-  return `🌿 ${s.diversity.toFixed(1)} types`;
+  return `🌿 ${s.diversity.toFixed(1)} types (local ${s.localDiversity.toFixed(1)})`;
 }
 
 export function statsText(s: StatsSnapshot): string {
   const fire = s.burning > 0 ? ` · 🔥 ${group(s.burning)}` : "";
   const storm = s.storms > 0 ? ` · ⛈ ${group(s.storms)}` : "";
   const pests = s.infested > 0 ? ` · 🐛 ${group(s.infested)}` : "";
+  const flood = s.flooding ? " · 🌊 flood" : "";
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const climate = ` · ☀ ${pct(s.sun)} 💧 ${pct(s.moisture)}${s.mast ? " 🌰" : ""}`;
-  return `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · trees ${group(s.trees)} · grass ${group(s.grass)} · bare ${group(s.bare)} · ${diversityLabel(s)}${climate}${storm}${fire}${pests} · ${speedLabel(s)}`;
+  return `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · trees ${group(s.trees)} · grass ${group(s.grass)} · bare ${group(s.bare)} · ${diversityLabel(s)}${climate}${storm}${flood}${fire}${pests} · ${speedLabel(s)}`;
 }

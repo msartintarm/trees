@@ -43,7 +43,7 @@
 use super::hex;
 use super::rng::{self, Stream};
 use super::hex::Grid;
-use super::terrain::{Terrain, RENDER_RELIEF};
+use super::terrain::{Terrain, MACRO_RENDER, RENDER_RELIEF};
 
 pub const GRASS_SEED_P: f64 = 0.0;
 pub const GRASS_CLONAL_P: f64 = 0.08;
@@ -144,12 +144,31 @@ pub const SERO_RADIUS: i32 = 2;
 /// scaled by the cloud's gustiness and by how drawn-up the tree grew
 /// (tall, thin forest trees fall first).
 pub const WINDTHROW_P: f64 = 0.0015;
-/// Long-distance dispersal: per mature tree per tick, base chance that one
-/// seed travels anywhere on the map (× the species' `long_distance`) —
-/// jays caching acorns, wind-borne winged and cottony seed, pods carried by
-/// browsing animals. A seed landing in open or edge ground may germinate.
+/// Long-distance dispersal: per full-grown mature tree per tick, base
+/// chance that one seed travels beyond the seed-rain disk (× the species'
+/// `long_distance`) — jays caching acorns, wind-borne winged and cottony
+/// seed, pods carried by browsing animals. The distance follows the
+/// species' fat-tailed 2Dt kernel (`ldd_scale`, capped at `ldd_cap` tiles;
+/// a tile ≈ one crown ≈ 10 m). A seed landing on a suitable site may
+/// germinate.
 pub const LDD_P: f64 = 0.0006;
 pub const LDD_GERMINATION: f64 = 0.5;
+/// 2Dt kernel shape: smaller = fatter tail. ~1 matches wind- and
+/// animal-dispersed trees (Clark et al. 1999).
+pub const LDD_SHAPE: f64 = 1.0;
+/// Fecundity ramp: a just-matured tree bears this fraction of a full crop,
+/// reaching full output at FECUNDITY_FULL × its maturity age.
+pub const FECUNDITY_MIN: f64 = 0.15;
+pub const FECUNDITY_FULL: f64 = 3.0;
+
+/// Distance (tiles) from a truncated 2Dt kernel with scale `s` and cap,
+/// for a uniform draw `u`: the inverse CDF of F(r) = 1 − (1 + r²/s²)^(−p).
+pub fn ldd_distance(s: f64, cap: f64, u: f64) -> f64 {
+    // Truncate by rescaling u into the kernel mass below the cap.
+    let mass = 1.0 - (1.0 + (cap / s).powi(2)).powf(-LDD_SHAPE);
+    let v = (u * mass).min(1.0 - 1e-12);
+    s * ((1.0 - v).powf(-1.0 / LDD_SHAPE) - 1.0).sqrt()
+}
 /// Masting (oak): synchronized boom years. Length of a "year" in ticks,
 /// oak establishment in mast vs lean years (seed predators eat lean crops).
 pub const MAST_YEAR_TICKS: u64 = 300;
@@ -181,9 +200,6 @@ pub const NICHE_PEAK: f64 = 1.8;
 pub const SOIL_COMPETITION: f64 = 2.0;
 /// Soil depth at which the hierarchy is neutral.
 pub const SOIL_TYPICAL: f64 = 0.55;
-/// Jays cache acorns within this many hexes of the parent tree (real jays
-/// carry them a few hundred metres, to open ground and woodland edges).
-pub const JAY_RADIUS: i32 = 12;
 /// Hex radius of the "same-species adults nearby" neighborhood.
 pub const NEAR_RADIUS: i32 = 2;
 /// Neighbor competition (all scaled by `competition`).
@@ -225,6 +241,50 @@ pub const BROWSE_P: f64 = 0.006;
 pub const BROWSE_KILL: f64 = 0.2;
 pub const BROWSE_SETBACK: u64 = 6;
 pub const BROWSE_SCAR_MAX: u8 = 10;
+/// Landscape-scale features (see Params).
+pub const CLIMATE_ZONES: f64 = 1.0;
+pub const RIVERS: f64 = 1.0;
+pub const GRAZING: f64 = 1.0;
+/// Temperature drop from the lowest to the highest ground at full altitude
+/// range (±LAPSE/2 around the map's mid-altitude): the lapse rate.
+pub const LAPSE: f64 = 0.5;
+/// Regional rain anomaly → moisture shift.
+pub const RAIN_GRADIENT: f64 = 0.5;
+/// Frost: below this temperature index, frost-tender trees establish less
+/// and die more (scaled by 1 − cold_hardiness).
+pub const FROST_T: f64 = 0.3;
+pub const FROST_HAZARD: f64 = 3.0;
+/// Treeline: no tree establishes below TREELINE_T; full recruitment above
+/// TREELINE_T + TREELINE_BAND. Snow shows on the ground below SNOW_T.
+pub const TREELINE_T: f64 = 0.1;
+pub const TREELINE_BAND: f64 = 0.08;
+pub const SNOW_T: f64 = 0.13;
+/// Soil thinning at the highest altitude (fraction of depth lost).
+pub const MONTANE_THIN: f64 = 0.35;
+/// Upstream drainage area (tiles) at which a channel forms (÷ rivers).
+pub const RIVER_CELLS: f64 = 350.0;
+/// Groundwater on a river bank (distance 1), falling off across the
+/// floodplain.
+pub const BANK_WATER: f64 = 0.8;
+/// Flood pulses: chance per tick (× how far the season is above
+/// FLOOD_MOISTURE), duration, and how long a fresh sediment bar lasts.
+pub const FLOOD_P: f64 = 0.02;
+pub const FLOOD_MOISTURE: f64 = 0.55;
+pub const FLOOD_TICKS: u16 = 25;
+pub const SEDIMENT_TICKS: u8 = 150;
+/// Saplings younger than this are scoured away by a flood.
+pub const SCOUR_AGE: u64 = 15;
+/// Anoxia: flood-tolerant trees still die in permanently saturated ground
+/// above this groundwater level (sedge marsh takes it).
+pub const ANOXIA_LEVEL: f64 = 0.85;
+pub const ANOXIA_HAZARD: f64 = 4.0;
+/// Riparian herbivores (beaver, moose): extra willow-sapling browsing ×
+/// (1 + this × groundwater).
+pub const RIPARIAN_BROWSE: f64 = 2.0;
+/// Grazing: extra grass hazard at full intensity × palatability, and the
+/// piosphere decay distance from water (tiles).
+pub const GRAZE_HAZARD: f64 = 1.5;
+pub const GRAZE_REACH: f64 = 18.0;
 /// How much of the climate swing reaches grass niche fit (see niche_site).
 pub const NICHE_CLIMATE: f64 = 0.35;
 /// Annual grass: per-tick germination chance from a full soil seed bank
@@ -414,6 +474,15 @@ pub struct Params {
     /// Neighbor-competition strength: conspecific seedling penalty,
     /// self-shading, needle-litter allelopathy, thatch, root water draw.
     pub competition: f64,
+    /// Map-scale climate: mountains cool with altitude (lapse rate, frost,
+    /// treeline) and a regional rain gradient (0 = uniform climate).
+    pub climate_zones: f64,
+    /// River channels, riparian corridors, and flood pulses; also the
+    /// riparian realism for willow (flood-bar recruitment, anoxia in
+    /// permanently saturated ground, beaver/moose browsing). 0 = none.
+    pub rivers: f64,
+    /// Grazing by herbivores on grass, heaviest near water (piospheres).
+    pub grazing: f64,
     pub seed_tree_p: f64,
     pub seed_grass_p: f64,
     /// Map size in tiles (applies on the next reseed, like the seeding
@@ -448,6 +517,9 @@ impl Default for Params {
             pest_strength: PEST_STRENGTH,
             browse: BROWSE,
             competition: COMPETITION,
+            climate_zones: CLIMATE_ZONES,
+            rivers: RIVERS,
+            grazing: GRAZING,
             seed_tree_p: SEED_TREE_P,
             seed_grass_p: SEED_GRASS_P,
             width: Grid::DEFAULT.width as u32,
@@ -460,8 +532,17 @@ impl Params {
     /// Clamp everything into ranges the sim can safely run with.
     /// Defaults on the original 64×64 map — the calibration grid the
     /// example probes and regime tests measure on.
+    /// The landscape-scale features (climate zones, rivers, grazing) are
+    /// off, so this is exactly the world the regime bands were measured on.
     pub fn legacy_map() -> Params {
-        Params { width: Grid::LEGACY.width as u32, height: Grid::LEGACY.height as u32, ..Params::default() }
+        Params {
+            width: Grid::LEGACY.width as u32,
+            height: Grid::LEGACY.height as u32,
+            climate_zones: 0.0,
+            rivers: 0.0,
+            grazing: 0.0,
+            ..Params::default()
+        }
     }
 
     pub fn sanitized(mut self) -> Params {
@@ -486,6 +567,9 @@ impl Params {
         self.pest_strength = prob(self.pest_strength, PEST_STRENGTH);
         self.browse = prob(self.browse, BROWSE);
         self.competition = prob(self.competition, COMPETITION);
+        self.climate_zones = prob(self.climate_zones, CLIMATE_ZONES);
+        self.rivers = prob(self.rivers, RIVERS);
+        self.grazing = prob(self.grazing, GRAZING);
         self.mutation_rate = if self.mutation_rate.is_finite() {
             self.mutation_rate.clamp(0.0, 0.2)
         } else {
@@ -616,6 +700,17 @@ pub struct SpeciesTraits {
     /// Seed reserves (acorn ≫ pod ≫ winged seed): the fraction of sod
     /// competition a big-seeded seedling pushes through.
     pub seed_reserve: f64,
+    /// Frost tolerance, 0 (tender) .. 1 (hardy): sets the alpine limit.
+    pub cold_hardy: f64,
+    /// Needs a bare, freshly flooded seedbed to recruit (willow's
+    /// short-lived seed; the "recruitment box").
+    pub seedbed: bool,
+    /// Long-distance kernel scale and hard cap, in tiles (≈ 10 m each):
+    /// wind-winged pine ~50 m / 600 m, jay-cached acorns ~80 m / 400 m,
+    /// ungulate-carried acacia pods ~60 m / 400 m, cottony willow seed on
+    /// wind and water ~100 m / 800 m.
+    pub ldd_scale: f64,
+    pub ldd_cap: f64,
 }
 
 pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
@@ -649,6 +744,10 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         own_shade: 1.0,
         litter: 0.0,
         seed_reserve: 0.2,
+        cold_hardy: 0.0,
+        seedbed: false,
+        ldd_scale: 6.0,
+        ldd_cap: 40.0,
     },
     SpeciesTraits {
         name: "Oak",
@@ -680,6 +779,10 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         own_shade: 0.7,
         litter: 0.0,
         seed_reserve: 0.6,
+        cold_hardy: 0.65,
+        seedbed: false,
+        ldd_scale: 8.0,
+        ldd_cap: 40.0,
     },
     SpeciesTraits {
         name: "Pine",
@@ -711,6 +814,10 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         own_shade: 1.0,
         litter: 1.0,
         seed_reserve: 0.0,
+        cold_hardy: 1.0,
+        seedbed: false,
+        ldd_scale: 5.0,
+        ldd_cap: 60.0,
     },
     SpeciesTraits {
         name: "Willow",
@@ -742,6 +849,10 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         own_shade: 1.0,
         litter: 0.0,
         seed_reserve: 0.0,
+        cold_hardy: 0.8,
+        seedbed: true,
+        ldd_scale: 10.0,
+        ldd_cap: 80.0,
     },
 ];
 
@@ -808,13 +919,15 @@ pub struct GrassTraits {
     /// Exponent on weather stress (1 = generic grass): deep-rooted C4
     /// bunchgrass shrugs off drought, shallow C3 sod browns out.
     pub drought_sensitivity: f64,
+    /// Grazer preference: leafy C3 sod ≫ annuals > coarse sedge, C4 bunch.
+    pub palatability: f64,
 }
 
 pub static GRASS_TABLE: [GrassTraits; GRASS_KIND_COUNT] = [
-    GrassTraits { name: "Bunchgrass", creep: 1.1, life: 1.4, shade_tolerance: 0.0, temp_opt: 0.62, temp_width: 0.26, water_opt: 0.38, water_width: 0.30, flammability: 1.6, fire_resprout: 0.6, sod: 1.6, flood_tolerant: false, seeder: false, drought_sensitivity: 0.3 },
-    GrassTraits { name: "Sod grass", creep: 1.1, life: 1.3, shade_tolerance: 0.45, temp_opt: 0.38, temp_width: 0.19, water_opt: 0.62, water_width: 0.24, flammability: 0.6, fire_resprout: 0.0, sod: 0.85, flood_tolerant: false, seeder: false, drought_sensitivity: 1.6 },
-    GrassTraits { name: "Sedge", creep: 1.0, life: 1.0, shade_tolerance: 0.2, temp_opt: 0.5, temp_width: 0.35, water_opt: 0.92, water_width: 0.20, flammability: 0.3, fire_resprout: 0.3, sod: 1.0, flood_tolerant: true, seeder: false, drought_sensitivity: 1.3 },
-    GrassTraits { name: "Annual", creep: 0.25, life: 0.35, shade_tolerance: 0.0, temp_opt: 0.55, temp_width: 0.36, water_opt: 0.45, water_width: 0.40, flammability: 1.3, fire_resprout: 0.0, sod: 1.2, flood_tolerant: false, seeder: true, drought_sensitivity: 0.7 },
+    GrassTraits { name: "Bunchgrass", creep: 1.1, life: 1.4, shade_tolerance: 0.0, temp_opt: 0.62, temp_width: 0.26, water_opt: 0.38, water_width: 0.30, flammability: 1.6, fire_resprout: 0.6, sod: 1.6, flood_tolerant: false, seeder: false, drought_sensitivity: 0.3, palatability: 0.3 },
+    GrassTraits { name: "Sod grass", creep: 1.1, life: 1.3, shade_tolerance: 0.45, temp_opt: 0.38, temp_width: 0.19, water_opt: 0.62, water_width: 0.24, flammability: 0.6, fire_resprout: 0.0, sod: 0.85, flood_tolerant: false, seeder: false, drought_sensitivity: 1.6, palatability: 1.0 },
+    GrassTraits { name: "Sedge", creep: 1.0, life: 1.0, shade_tolerance: 0.2, temp_opt: 0.5, temp_width: 0.35, water_opt: 0.92, water_width: 0.20, flammability: 0.3, fire_resprout: 0.3, sod: 1.0, flood_tolerant: true, seeder: false, drought_sensitivity: 1.3, palatability: 0.35 },
+    GrassTraits { name: "Annual", creep: 0.25, life: 0.35, shade_tolerance: 0.0, temp_opt: 0.55, temp_width: 0.36, water_opt: 0.45, water_width: 0.40, flammability: 1.3, fire_resprout: 0.0, sod: 1.2, flood_tolerant: false, seeder: true, drought_sensitivity: 0.7, palatability: 0.7 },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -883,6 +996,12 @@ struct SiteCtx {
     wet_gate: f64,
     litter: f64,
     root_stress: f64,
+    /// Local temperature index, groundwater, and seedbed state.
+    temp: f64,
+    groundwater: f64,
+    bare: bool,
+    sediment: bool,
+    channel: bool,
 }
 
 pub struct World {
@@ -956,14 +1075,26 @@ pub struct World {
     range_disk: Vec<(i32, i32, i32)>,
     /// The tile rectangle, fixed for the world's lifetime.
     grid: Grid,
+    /// River channels (open water), hex distance to the nearest channel
+    /// (u16::MAX = none), that channel's floodplain reach, and the
+    /// corridor groundwater they add.
+    channel: Vec<bool>,
+    river_dist: Vec<u16>,
+    river_reach: Vec<f32>,
+    river_water: Vec<f32>,
+    /// Ticks a fresh flood-sediment bar stays a seedbed.
+    sediment: Vec<u8>,
+    /// Ticks left in the current flood pulse (0 = none) and its stage
+    /// (fraction of each floodplain it covers).
+    flood_left: u16,
+    flood_stage: f64,
     /// Per-tick caches of the niche site (temperature) and each grass
     /// kind's raw fit — pure functions of the tick's climate and the
     /// static terrain, reused by several passes.
     site_temp: Vec<f64>,
     grass_fit_now: Vec<[f64; GRASS_KIND_COUNT]>,
-    /// Offsets for the NEAR_RADIUS and JAY_RADIUS disks.
+    /// Offsets for the NEAR_RADIUS disk.
     near_disk: Vec<(i32, i32, i32)>,
-    jay_disk: Vec<(i32, i32, i32)>,
     /// Mature trees per species within NEAR_RADIUS of each tile.
     adults_near: Vec<[u8; SPECIES_COUNT]>,
     /// Specialist pest load on each tree, 0 = clean .. 255 = dying.
@@ -1021,17 +1152,27 @@ impl World {
             seed_bank: vec![0.0; n],
             range_disk: hex::disk(params.tree_range),
             grid,
+            channel: vec![false; n],
+            river_dist: vec![u16::MAX; n],
+            river_reach: vec![0.0; n],
+            river_water: vec![0.0; n],
+            sediment: vec![0; n],
+            flood_left: 0,
+            flood_stage: 0.0,
             site_temp: vec![0.5; n],
             grass_fit_now: vec![[0.0; GRASS_KIND_COUNT]; n],
             near_disk: hex::disk(NEAR_RADIUS),
-            jay_disk: hex::disk(JAY_RADIUS),
             adults_near: vec![[0; SPECIES_COUNT]; n],
             pest: vec![0; n],
             browse_scar: vec![0; n],
             litter: vec![0.0; n],
             params,
         };
+        w.rebuild_rivers();
         for i in 0..n {
+            if w.channel[i] {
+                continue; // open water
+            }
             if rng::uniform01(seed, i as u32, 0, Stream::Seeding) < w.params.seed_tree_p {
                 let sp = Species::from_u8(
                     (rng::hash(seed, i as u32, 0, Stream::SpeciesChoice) % SPECIES_COUNT as u64)
@@ -1066,12 +1207,90 @@ impl World {
     /// Groundwater level of the terrain under a tile, 0..1 (scaled by the
     /// water_table param).
     pub fn water_table(&self, index: usize) -> f32 {
-        self.terrain.water[index] * self.params.water_table as f32
+        let catena = self.terrain.water[index];
+        let river = self.river_water[index] * self.params.rivers as f32;
+        let open = if self.channel[index] { 1.0 } else { 0.0 };
+        catena.max(river).max(open) * self.params.water_table as f32
     }
 
-    /// Render height of a tile's surface (0 on a flat world).
+    /// Render height of a tile's surface (0 on a flat world): local hills
+    /// plus the map-scale mountains; river channels sit a little low.
     pub fn elevation(&self, index: usize) -> f32 {
-        self.terrain.elevation[index] * (RENDER_RELIEF * self.params.terrain) as f32
+        let hills = self.terrain.elevation[index] as f64 * RENDER_RELIEF * self.params.terrain;
+        let mountains = self.terrain.altitude[index] as f64 * MACRO_RENDER * self.params.climate_zones;
+        let bed = if self.channel[index] { 0.25 } else { 0.0 };
+        (hills + mountains - bed) as f32
+    }
+
+    /// Highest possible surface on this map (for picking and shadows).
+    pub fn max_elevation(&self) -> f32 {
+        (RENDER_RELIEF * self.params.terrain
+            + MACRO_RENDER * self.terrain.altitude_amp as f64 * self.params.climate_zones) as f32
+    }
+
+    /// Map-scale altitude, 0 .. 1 (0 on small maps' low ground).
+    pub fn altitude(&self, index: usize) -> f32 {
+        self.terrain.altitude[index]
+    }
+
+    /// Cooling with altitude (and warming of the lowlands) around the
+    /// map's mid-altitude, scaled by climate_zones.
+    fn lapse(&self, index: usize) -> f64 {
+        let mid = self.terrain.altitude_amp as f64 / 2.0;
+        -LAPSE * self.params.climate_zones * (self.terrain.altitude[index] as f64 - mid)
+    }
+
+    /// Regional moisture shift (wet vs dry regions), scaled by climate_zones.
+    fn rain_shift(&self, index: usize) -> f64 {
+        RAIN_GRADIENT * self.params.climate_zones * self.terrain.rain[index] as f64
+    }
+
+    /// Whether a tile is open river water (nothing grows there).
+    pub fn is_channel(&self, index: usize) -> bool {
+        self.channel[index]
+    }
+
+    /// Hex distance to the nearest river channel (None if no river nearby).
+    pub fn river_distance(&self, index: usize) -> Option<u16> {
+        let d = self.river_dist[index];
+        (d != u16::MAX).then_some(d)
+    }
+
+    /// A flood pulse is running.
+    pub fn is_flooding(&self) -> bool {
+        self.flood_left > 0
+    }
+
+    /// Whether a tile is under floodwater right now.
+    pub fn inundated(&self, index: usize) -> bool {
+        self.flood_left > 0 && self.in_floodplain(index, self.flood_stage)
+    }
+
+    /// Whether a tile lies within `stage` of its river's floodplain reach.
+    fn in_floodplain(&self, index: usize, stage: f64) -> bool {
+        !self.channel[index]
+            && self.river_dist[index] != u16::MAX
+            && (self.river_dist[index] as f64) <= self.river_reach[index] as f64 * stage
+    }
+
+    /// Fresh flood sediment on a tile, 0..1.
+    pub fn sediment(&self, index: usize) -> f32 {
+        self.sediment[index] as f32 / SEDIMENT_TICKS as f32
+    }
+
+    /// Grazing intensity on a tile, 0..1: herbivores stay near water
+    /// (piosphere), so pressure falls with distance to rivers and wet
+    /// ground.
+    pub fn grazing_intensity(&self, index: usize) -> f64 {
+        if self.params.grazing <= 0.0 {
+            return 0.0;
+        }
+        let near_river = match self.river_distance(index) {
+            Some(d) => (-(d as f64) / GRAZE_REACH).exp() * self.params.rivers,
+            None => 0.0,
+        };
+        let near = near_river.max(self.terrain.water[index] as f64);
+        self.params.grazing * (0.3 + 0.7 * near)
     }
 
     /// Normalized terrain layers for display/probes: (elevation, heat, depth).
@@ -1083,12 +1302,26 @@ impl World {
     /// (0.5 in a neutral climate on flat ground).
     pub fn temperature(&self, index: usize) -> f64 {
         let aspect = (self.terrain.heat[index] as f64 - 0.5) * 1.0 * self.params.terrain;
-        (self.sun + aspect).clamp(0.02, 0.98)
+        (self.sun + aspect + self.lapse(index)).clamp(0.02, 0.98)
+    }
+
+    /// Frost stress for a species on a tile, 0..1 (0 when warm enough or
+    /// frost-hardy).
+    fn frost(&self, index: usize, cold_hardy: f64) -> f64 {
+        let cold = ((FROST_T - self.temperature(index)) / FROST_T).clamp(0.0, 1.0);
+        self.params.climate_zones * cold * (1.0 - cold_hardy)
     }
 
     /// Effective soil depth, 1 on a flat world.
     pub fn soil_depth(&self, index: usize) -> f64 {
-        1.0 - self.params.terrain * (1.0 - self.terrain.depth[index] as f64)
+        1.0 - self.params.terrain * (1.0 - self.depth(index))
+    }
+
+    /// Terrain soil depth, thinned on the mountains (montane soils are
+    /// shallow and rocky) when climate zones are on.
+    fn depth(&self, index: usize) -> f64 {
+        self.terrain.depth[index] as f64
+            * (1.0 - MONTANE_THIN * self.params.climate_zones * self.terrain.altitude[index] as f64)
     }
 
     /// Grass kind of a grass tile (meaningless elsewhere).
@@ -1114,6 +1347,45 @@ impl World {
     /// The world's tile rectangle.
     pub fn grid(&self) -> Grid {
         self.grid
+    }
+
+    /// Mean effective number of plant types within 16×16-tile windows
+    /// (local, α diversity) — compare with `diversity()` (whole map, γ).
+    pub fn local_diversity(&self) -> f64 {
+        let win = 16;
+        let g = self.grid;
+        let (mut sum, mut count) = (0.0, 0.0);
+        for wy in (0..g.height).step_by(win) {
+            for wx in (0..g.width).step_by(win) {
+                let mut n = [0u32; SPECIES_COUNT + GRASS_KIND_COUNT];
+                for row in wy..(wy + win as i32).min(g.height) {
+                    for col in wx..(wx + win as i32).min(g.width) {
+                        let i = (row * g.width + col) as usize;
+                        match self.state[i] {
+                            Cell::Tree => n[self.species[i] as usize] += 1,
+                            Cell::Grass if self.params.grass_niches <= 0.0 => n[SPECIES_COUNT] += 1,
+                            Cell::Grass => n[SPECIES_COUNT + self.species[i] as usize] += 1,
+                            Cell::Bare => {}
+                        }
+                    }
+                }
+                let total: u32 = n.iter().sum();
+                if total == 0 {
+                    continue;
+                }
+                let h: f64 = n
+                    .iter()
+                    .filter(|&&c| c > 0)
+                    .map(|&c| {
+                        let p = c as f64 / total as f64;
+                        -p * p.ln()
+                    })
+                    .sum();
+                sum += h.exp();
+                count += 1.0;
+            }
+        }
+        if count > 0.0 { sum / count } else { 0.0 }
     }
 
     /// Specialist pest load on a tree, 0 (clean) .. 1 (dying).
@@ -1259,7 +1531,8 @@ impl World {
             // rocky soils hold less of it.
             let wt = self.water_table(index) as f64 * WATER_TABLE_REACH;
             let retention = 0.85 + 0.15 * self.soil_depth(index);
-            (self.moisture + (1.0 - self.moisture) * wt) * retention
+            let m = (self.moisture + self.rain_shift(index)).clamp(0.0, 1.0);
+            (m + (1.0 - m) * wt) * retention
         }
     }
 
@@ -1269,8 +1542,9 @@ impl World {
     /// another for a while (the storage effect), but the map, not the
     /// weather, decides who lives where.
     fn niche_site(&self, index: usize) -> (f64, f64) {
-        let sun = 0.5 + (self.sun - 0.5) * NICHE_CLIMATE;
-        let moisture = 0.5 + (self.moisture - 0.5) * NICHE_CLIMATE;
+        let sun = 0.5 + (self.sun - 0.5) * NICHE_CLIMATE + self.lapse(index);
+        let moisture =
+            (0.5 + (self.moisture - 0.5) * NICHE_CLIMATE + self.rain_shift(index)).clamp(0.0, 1.0);
         let aspect = (self.terrain.heat[index] as f64 - 0.5) * self.params.terrain;
         let wt = self.water_table(index) as f64 * WATER_TABLE_REACH;
         let retention = 0.85 + 0.15 * self.soil_depth(index);
@@ -1314,7 +1588,66 @@ impl World {
         if params.tree_range != self.params.tree_range {
             self.range_disk = hex::disk(params.tree_range);
         }
+        let rivers_changed = params.rivers != self.params.rivers;
         self.params = params;
+        if rivers_changed {
+            self.rebuild_rivers();
+        }
+    }
+
+    /// Derive channels and riparian corridors from the drainage map: a
+    /// channel wherever upstream area ≥ RIVER_CELLS / rivers; then a
+    /// multi-source BFS gives every tile its distance to water and the
+    /// reach of the floodplain it belongs to (wider for bigger rivers).
+    fn rebuild_rivers(&mut self) {
+        let n = self.grid.cells();
+        let r = self.params.rivers;
+        self.channel.fill(false);
+        self.river_dist.fill(u16::MAX);
+        self.river_reach.fill(0.0);
+        self.river_water.fill(0.0);
+        if r <= 0.0 {
+            return;
+        }
+        let threshold = RIVER_CELLS / r;
+        let mut queue = std::collections::VecDeque::new();
+        for i in 0..n {
+            let f = self.terrain.flow[i] as f64;
+            if f >= threshold {
+                self.channel[i] = true;
+                self.river_dist[i] = 0;
+                self.river_reach[i] = (1.0 + 1.6 * (f / threshold).ln()) as f32;
+                queue.push_back(i);
+                if self.state[i] != Cell::Bare {
+                    self.state[i] = Cell::Bare; // the river takes the tile
+                }
+            }
+        }
+        while let Some(c) = queue.pop_front() {
+            let d = self.river_dist[c];
+            if d as f32 > self.river_reach[c] + 6.0 {
+                continue;
+            }
+            let (q, rr) = self.grid.index_to_axial(c);
+            for (dq, dr) in hex::NEIGHBORS {
+                if let Some(j) = self.grid.axial_to_index(q + dq, rr + dr) {
+                    if self.river_dist[j] == u16::MAX {
+                        self.river_dist[j] = d + 1;
+                        self.river_reach[j] = self.river_reach[c];
+                        queue.push_back(j);
+                    }
+                }
+            }
+        }
+        for i in 0..n {
+            let d = self.river_dist[i];
+            if d == 0 || d == u16::MAX {
+                continue;
+            }
+            let reach = self.river_reach[i] as f64;
+            let fall = ((d as f64 - 1.0) / (reach + 1.0)).clamp(0.0, 1.0);
+            self.river_water[i] = (BANK_WATER * (1.0 - fall)) as f32;
+        }
     }
 
     pub fn state(&self, index: usize) -> Cell {
@@ -1478,6 +1811,9 @@ impl World {
 
     /// Brush stroke choosing the grass kind (the panel's grass picker).
     pub fn paint_grass(&mut self, index: usize, kind: GrassKind, tick: u64) {
+        if self.channel[index] {
+            return;
+        }
         self.plant_grass(index, kind, tick);
     }
 
@@ -1500,7 +1836,9 @@ impl World {
         if self.state[index] != Cell::Tree || !self.is_mature(index, tick) {
             return false;
         }
-        let chance = self.species(index).traits().resprout;
+        // Rivers bring beavers and floods that cut root crowns back:
+        // clones don't regrow indefinitely.
+        let chance = self.species(index).traits().resprout * (1.0 - 0.5 * self.params.rivers);
         if chance <= 0.0
             || rng::uniform01(self.seed, index as u32, tick, Stream::Resprout) >= chance
         {
@@ -1529,6 +1867,9 @@ impl World {
 
     /// Brush stroke choosing the tree species (the panel's species picker).
     pub fn paint_species(&mut self, index: usize, brush: Brush, sp: Species, tick: u64) {
+        if self.channel[index] && matches!(brush, Brush::Tree | Brush::Grass) {
+            return; // nothing roots in open water
+        }
         if brush == Brush::Tree {
             self.plant_tree(index, sp, tick);
         } else {
@@ -1619,6 +1960,8 @@ impl World {
                     }
                     let sp = self.species[i] as usize;
                     let dispersal = SPECIES_TABLE[sp].dispersal;
+                    // Young trees bear small crops (seed output grows with size).
+                    let fecund = self.fecundity(i, tick) as f32;
                     let (q, r) = self.grid.index_to_axial(i);
                     for &(dq, dr, _) in &self.near_disk {
                         if let Some(j) = self.grid.axial_to_index(q + dq, r + dr) {
@@ -1642,7 +1985,7 @@ impl World {
                                 // casts proportionally more seed, so its genes
                                 // weigh more in the local seed mix.
                                 let g = self.genome[i];
-                                let kw = kernel_weight(d) as f32 * g[0];
+                                let kw = kernel_weight(d) as f32 * g[0] * fecund;
                                 self.seed_rain[j][sp] += kw;
                                 self.gene_rain[j][sp][0] += kw * g[0];
                                 self.gene_rain[j][sp][1] += kw * g[1];
@@ -1840,10 +2183,11 @@ impl World {
     }
 
     /// Long-distance dispersal: every mature tree occasionally sends one
-    /// seed far beyond its seed-rain disk — jays caching acorns within
-    /// JAY_RADIUS of the parent, winged pine seed and cottony willow seed
-    /// on the wind anywhere on the map, acacia pods carried off by
-    /// browsers. Arrival is not establishment: the seed then faces exactly
+    /// seed beyond its seed-rain disk — jays caching acorns, winged pine
+    /// seed and cottony willow seed on the wind, acacia pods carried off by
+    /// browsers — a distance drawn from the species' bounded fat-tailed
+    /// kernel (see `ldd_target`), at a rate that grows with the parent's
+    /// size (`fecundity`). Arrival is not establishment: the seed then faces exactly
     /// the site filter local seed does (light, niche, soil, competition,
     /// mast-year predation), so a seed landing in another species' habitat
     /// rarely takes.
@@ -1855,13 +2199,14 @@ impl World {
             }
             let k = self.species[o] as usize;
             let tr = &SPECIES_TABLE[k];
-            let rate = LDD_P * tr.long_distance * self.genome[o][0] as f64;
+            let rate = LDD_P * tr.long_distance * self.genome[o][0] as f64 * self.fecundity(o, tick);
             if rng::uniform01(self.seed, o as u32, tick, Stream::Jay) >= rate {
                 continue;
             }
-            let roll = rng::hash(self.seed, o as u32 + 7919, tick, Stream::Jay);
-            let Some(t) = self.ldd_target(o, roll) else {
-                continue; // cached off the map
+            let u_dist = rng::uniform01(self.seed, o as u32 + 7919, tick, Stream::Jay);
+            let u_angle = rng::uniform01(self.seed, o as u32 + 15_881, tick, Stream::Jay);
+            let Some(t) = self.ldd_target(o, u_dist, u_angle) else {
+                continue; // carried off the map
             };
             if self.state[t] == Cell::Tree || self.remains_code[t] != 0 || self.burn[t] > 0 {
                 continue;
@@ -1881,16 +2226,30 @@ impl World {
         }
     }
 
-    /// Where a long-distance seed from the tree on `o` lands: jay-cached
-    /// species within JAY_RADIUS of the parent, the rest anywhere.
-    fn ldd_target(&self, o: usize, roll: u64) -> Option<usize> {
-        if self.species(o).traits().jay_cached {
-            let (q, r) = self.grid.index_to_axial(o);
-            let (dq, dr, _) = self.jay_disk[(roll % self.jay_disk.len() as u64) as usize];
-            self.grid.axial_to_index(q + dq, r + dr)
-        } else {
-            Some((roll % self.grid.cells() as u64) as usize)
-        }
+    /// Where a long-distance seed from the tree on `o` lands, from two
+    /// uniform draws: a distance from the species' fat-tailed 2Dt kernel
+    /// (Clark et al. 1999), `r = s·√((1−u)^(−1/p) − 1)` with scale `s`
+    /// and shape LDD_SHAPE, truncated at the species' cap, in a uniform
+    /// direction. Most seed lands within a few scales; rare seed flies to
+    /// the cap — never across an arbitrarily large map.
+    fn ldd_target(&self, o: usize, u_dist: f64, u_angle: f64) -> Option<usize> {
+        let tr = self.species(o).traits();
+        let r = ldd_distance(tr.ldd_scale, tr.ldd_cap, u_dist);
+        let theta = std::f64::consts::TAU * u_angle;
+        // Tile centers are √3 world units apart.
+        let (x, y) = self.grid.center(o);
+        let step = hex::SQRT3 * hex::SIZE;
+        self.grid.pick(x + r * step * theta.cos(), y + r * step * theta.sin())
+    }
+
+    /// Seed output relative to a full-grown tree: a tree that has just
+    /// matured bears a small crop, rising to full fecundity at
+    /// FECUNDITY_FULL × its maturity age (seed production scales with size).
+    fn fecundity(&self, index: usize, tick: u64) -> f64 {
+        let m = self.maturity_age(index).max(1) as f64;
+        let age = self.age(index, tick) as f64;
+        (FECUNDITY_MIN + (1.0 - FECUNDITY_MIN) * (age - m) / (m * (FECUNDITY_FULL - 1.0)))
+            .clamp(FECUNDITY_MIN, 1.0)
     }
 
     /// Specialist pests and pathogens. Oak wilt and its kin spread from an
@@ -1947,6 +2306,58 @@ impl World {
         }
     }
 
+    /// River flood pulses. Wet seasons can send the rivers over their
+    /// banks; for FLOOD_TICKS the floodplain (up to `flood_stage` of each
+    /// corridor's reach) is under water: grasses other than sedge and young
+    /// saplings are scoured away, fires drowned. When the water recedes it
+    /// leaves fresh sediment bars on the bare ground — the seedbed willows
+    /// (and annual pioneers) recruit on.
+    fn flood_pass(&mut self, tick: u64) {
+        for s in self.sediment.iter_mut() {
+            *s = s.saturating_sub(1);
+        }
+        let r = self.params.rivers;
+        if r <= 0.0 {
+            self.flood_left = 0;
+            return;
+        }
+        if self.flood_left == 0 {
+            let wetness = ((self.moisture - FLOOD_MOISTURE) / (1.0 - FLOOD_MOISTURE)).max(0.0);
+            if rng::uniform01(self.seed, 0, tick, Stream::Flood) < r * FLOOD_P * wetness {
+                self.flood_left = FLOOD_TICKS;
+                self.flood_stage = 0.5 + 0.8 * rng::uniform01(self.seed, 1, tick, Stream::Flood);
+            }
+            return;
+        }
+        for i in 0..self.grid.cells() {
+            if !self.inundated(i) {
+                continue;
+            }
+            self.wet[i] = WET_TICKS;
+            self.burn[i] = 0;
+            let scour = match self.state[i] {
+                Cell::Grass => !self.grass_kind(i).traits().flood_tolerant,
+                Cell::Tree => self.age(i, tick) < SCOUR_AGE,
+                Cell::Bare => false,
+            };
+            if scour {
+                self.state[i] = Cell::Bare;
+                self.clear_remains(i); // washed away, not left standing
+            }
+        }
+        self.flood_left -= 1;
+        if self.flood_left == 0 {
+            for i in 0..self.grid.cells() {
+                if self.in_floodplain(i, self.flood_stage)
+                    && self.state[i] == Cell::Bare
+                    && self.remains_code[i] == 0
+                {
+                    self.sediment[i] = SEDIMENT_TICKS;
+                }
+            }
+        }
+    }
+
     /// Browsers (deer) eat saplings, favoring palatable species: some
     /// browse kills outright, the rest knocks the sapling back — a
     /// stunted sapling stays in browse reach longer (the browse trap).
@@ -1959,7 +2370,8 @@ impl World {
                 continue;
             }
             let pal = self.species(i).traits().palatability;
-            let p = self.params.browse * BROWSE_P * pal;
+            let riparian = 1.0 + RIPARIAN_BROWSE * self.params.rivers * self.water_table(i) as f64;
+            let p = self.params.browse * BROWSE_P * pal * riparian;
             if rng::uniform01(self.seed, i as u32, tick, Stream::Browse) >= p {
                 continue;
             }
@@ -2119,6 +2531,8 @@ impl World {
                 let k = self.species[i] as usize;
                 let fit = self.grass_fit_now[i][k];
                 hazard *= (1.0 + self.params.grass_niches * (0.6 - 1.2 * fit)).max(0.3);
+                // Grazers crop the palatable grasses, most near water.
+                hazard *= 1.0 + GRAZE_HAZARD * self.grazing_intensity(i) * GRASS_TABLE[k].palatability;
                 if !GRASS_TABLE[k].flood_tolerant {
                     let excess = (self.water_table(i) as f64 - 0.5).max(0.0);
                     hazard *= 1.0 + self.params.grass_niches * WATERLOG_HAZARD * excess;
@@ -2134,6 +2548,15 @@ impl World {
                 }
                 let load = self.pest[i] as f64 / 255.0;
                 hazard = 1.0 - (1.0 - hazard) * (1.0 - PEST_HAZARD * load);
+                let tr = self.species(i).traits();
+                // Frost kills tender trees in the cold zones; saturated
+                // ground suffocates even flood-tolerant roots.
+                hazard = (hazard * (1.0 + FROST_HAZARD * self.frost(i, tr.cold_hardy))).min(1.0);
+                if tr.flood_tolerant {
+                    let wt = self.water_table(i) as f64;
+                    let sat = ((wt - ANOXIA_LEVEL) / (1.0 - ANOXIA_LEVEL)).clamp(0.0, 1.0);
+                    hazard = (hazard * (1.0 + self.params.rivers * ANOXIA_HAZARD * sat)).min(1.0);
+                }
             }
             if self.state[i] == Cell::Tree && !self.species(i).traits().flood_tolerant {
                 let excess = (self.water_table(i) as f64 - 0.5).max(0.0);
@@ -2277,12 +2700,17 @@ impl World {
                 None
             },
             site_temp: self.site_temp[i],
-            soil: p.terrain * SOIL_COMPETITION * (self.terrain.depth[i] as f64 - SOIL_TYPICAL),
+            soil: p.terrain * SOIL_COMPETITION * (self.depth(i) - SOIL_TYPICAL),
             on_ash: self.ash[i] > 0,
             flood: (1.0 - 2.0 * (self.water_table(i) as f64 - 0.5).max(0.0)).max(0.0),
             wet_gate: ((ground_wet - 0.15) / 0.45).clamp(0.0, 1.0),
             litter: (1.0 - p.competition * ALLELOPATHY * self.litter[i] as f64).max(0.0),
             root_stress: self.root_water_stress(i),
+            temp: self.temperature(i),
+            groundwater: self.water_table(i) as f64,
+            bare: self.state[i] == Cell::Bare,
+            sediment: self.sediment[i] > 0,
+            channel: self.channel[i],
         }
     }
 
@@ -2291,6 +2719,9 @@ impl World {
     fn establish(&self, c: &SiteCtx, i: usize, k: usize, light: f64) -> f64 {
         let p = &self.params;
         let tr = &SPECIES_TABLE[k];
+        if c.channel {
+            return 0.0; // open water
+        }
         // Shade tolerance, weakened under a canopy of the species' own kind
         // (oak seedlings fail beneath oaks: they need gaps).
         let own = self.adults_near[i][k] as f64;
@@ -2329,8 +2760,34 @@ impl World {
         if !tr.flood_tolerant {
             pk *= c.flood;
         }
-        // Willow seed only lives days: dry ground barely takes it.
-        pk *= tr.dry_ground + (1.0 - tr.dry_ground) * c.wet_gate;
+        // Willow seed only lives days: dry ground barely takes it. With
+        // rivers, it needs the real recruitment box — a bare, freshly
+        // flooded sediment bar — not just damp ground or a sod mat.
+        let damp = tr.dry_ground + (1.0 - tr.dry_ground) * c.wet_gate;
+        pk *= if tr.seedbed && p.rivers > 0.0 {
+            let bed = if c.sediment {
+                1.0
+            } else if c.bare {
+                0.3 * c.wet_gate
+            } else {
+                0.0
+            };
+            damp + p.rivers * (bed - damp)
+        } else {
+            damp
+        };
+        // Even flood-tolerant roots suffocate in permanently saturated
+        // ground (that's sedge marsh).
+        if tr.flood_tolerant {
+            let sat = ((c.groundwater - ANOXIA_LEVEL) / (1.0 - ANOXIA_LEVEL)).clamp(0.0, 1.0);
+            pk *= 1.0 - p.rivers * sat;
+        }
+        // Climate zones: frost-tender seedlings fail in the cold, and above
+        // the treeline no tree establishes at all.
+        let cold = ((FROST_T - c.temp) / FROST_T).clamp(0.0, 1.0);
+        pk *= 1.0 - p.climate_zones * cold * (1.0 - tr.cold_hardy);
+        let treeline = ((c.temp - TREELINE_T) / TREELINE_BAND).clamp(0.0, 1.0);
+        pk *= 1.0 - p.climate_zones * (1.0 - treeline);
         // Mast years swamp the acorn predators; in lean years rodents and
         // weevils eat nearly the whole crop.
         if tr.jay_cached {
@@ -2353,7 +2810,11 @@ impl World {
         for i in 0..self.grid.cells() {
             // A standing husk occupies the tile: nothing establishes on a
             // stump until the mycelium has finished with it.
-            if self.burn[i] > 0 || self.state[i] == Cell::Tree || self.remains_code[i] != 0 {
+            if self.burn[i] > 0
+                || self.state[i] == Cell::Tree
+                || self.remains_code[i] != 0
+                || self.channel[i]
+            {
                 continue;
             }
             let s = self.state[i];
@@ -2436,7 +2897,7 @@ impl World {
                 // take over (they carry the climate response instead).
                 let legacy = 1.0 + (1.0 - niches) * (sun_f * water_base - 1.0);
                 let mut pk = (seed + creep) * light_k * fert * legacy * self.grass_fit(k, i);
-                if tr.seeder && on_ash {
+                if tr.seeder && (on_ash || self.sediment[i] > 0) {
                     pk *= 1.0 + niches; // annual seed banks flush on burns
                 }
                 if !tr.flood_tolerant {
@@ -2511,6 +2972,7 @@ impl World {
         self.refresh_site_cache();
         self.decay_pass();
         self.weather_pass(tick);
+        self.flood_pass(tick);
         self.rebuild_fields(tick);
         self.root_pass(tick);
         self.dispersal_pass(tick);
@@ -2531,7 +2993,7 @@ mod tests {
 
     /// Defaults on the 64×64 map the tests were calibrated on.
     fn legacy() -> Params {
-        Params { width: 64, height: 64, ..Params::default() }
+        Params::legacy_map()
     }
 
     /// Fire off unless a test is about fire — ignitions are rare but would
@@ -3056,6 +3518,9 @@ mod tests {
             pest_strength: 3.0,
             browse: -1.0,
             competition: f64::INFINITY,
+            climate_zones: 2.0,
+            rivers: f64::NAN,
+            grazing: -0.5,
             seed_tree_p: f64::NAN,
             seed_grass_p: 0.5,
             width: 3,
@@ -3066,6 +3531,7 @@ mod tests {
         assert_eq!(p.pest_strength, 1.0);
         assert_eq!(p.browse, 0.0);
         assert_eq!(p.competition, COMPETITION);
+        assert_eq!((p.climate_zones, p.rivers, p.grazing), (1.0, RIVERS, 0.0));
         assert_eq!(p.grass_seed_p, 1.0);
         assert_eq!(p.grass_clonal_p, 0.0);
         assert_eq!(p.shade_strength, 1.0);
@@ -4166,28 +4632,33 @@ mod tests {
         panic!("the stump tile never regrew after decomposition");
     }
     #[test]
-    fn jays_cache_acorns_near_the_parent_while_wind_seed_goes_anywhere() {
-        let mut w = bare_world(3, no_fire());
-        let (c, q, r) = center();
-        w.paint_species(c, Brush::Tree, Species::Oak, 0);
-        let pine = G.axial_to_index(q + 1, r).unwrap();
-        w.paint_species(pine, Brush::Tree, Species::Pine, 0);
-        let dist = |a: usize, b: usize| {
-            let (aq, ar) = G.index_to_axial(a);
-            let (bq, br) = G.index_to_axial(b);
-            hex::distance(aq, ar, bq, br)
-        };
-        let mut far_pine = false;
-        for roll in 0..2_000u64 {
-            let roll = rng::mix64(roll);
-            if let Some(t) = w.ldd_target(c, roll) {
-                assert!(dist(c, t) <= JAY_RADIUS, "acorn cached {} hexes away", dist(c, t));
-            }
-            if let Some(t) = w.ldd_target(pine, roll) {
-                far_pine |= dist(pine, t) > JAY_RADIUS * 2;
+    fn long_distance_seed_follows_a_bounded_fat_tailed_kernel() {
+        // Distances straight from the kernel: most seed stays within a few
+        // scales, the tail reaches well beyond, and nothing passes the cap.
+        for sp in [Species::Acacia, Species::Oak, Species::Pine, Species::Willow] {
+            let tr = sp.traits();
+            let mut d: Vec<f64> =
+                (0..10_000).map(|k| ldd_distance(tr.ldd_scale, tr.ldd_cap, (k as f64 + 0.5) / 10_000.0)).collect();
+            d.sort_by(f64::total_cmp);
+            let median = d[5_000];
+            assert!(median > 0.5 * tr.ldd_scale && median < 2.0 * tr.ldd_scale, "{sp:?} median {median:.1}");
+            assert!(d[9_900] > 3.0 * tr.ldd_scale, "{sp:?} needs a fat tail ({:.1})", d[9_900]);
+            assert!(*d.last().unwrap() <= tr.ldd_cap + 1e-9, "{sp:?} past the cap");
+        }
+        // And landing tiles on a big map respect the cap too.
+        let mut w = World::with_params(3, Params { width: 256, height: 256, ..no_fire() });
+        let g = w.grid();
+        let c = g.middle();
+        w.paint_species(c, Brush::Tree, Species::Pine, 0);
+        let (cq, cr) = g.index_to_axial(c);
+        let cap = Species::Pine.traits().ldd_cap;
+        for k in 0..2_000u64 {
+            let (u, a) = (rng::uniform01(1, k as u32, 0, Stream::Jay), rng::uniform01(2, k as u32, 0, Stream::Jay));
+            if let Some(t) = w.ldd_target(c, u, a) {
+                let (q, r) = g.index_to_axial(t);
+                assert!(hex::distance(q, r, cq, cr) as f64 <= cap + 1.5, "seed landed past the cap");
             }
         }
-        assert!(far_pine, "wind-borne pine seed should reach across the map");
     }
 
     #[test]

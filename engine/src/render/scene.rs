@@ -8,7 +8,6 @@ use bytemuck::{Pod, Zeroable};
 
 use crate::sim::hex;
 use crate::sim::rng::mix64;
-use crate::sim::terrain::RENDER_RELIEF;
 use crate::sim::world::{Cell, Species, World, BROWSE_SCAR_MAX, BROWSE_SETBACK, GRASS_KIND_COUNT, SPECIES_COUNT};
 
 #[repr(C)]
@@ -108,6 +107,13 @@ const PEST_BRONZE: [f32; 3] = [0.55, 0.32, 0.12];
 const ACORN: [f32; 3] = [0.62, 0.50, 0.20];
 /// Rust-brown pine-needle carpet on the ground.
 const NEEDLES: [f32; 3] = [0.46, 0.27, 0.13];
+/// River water, floodwater over the floodplain, fresh sediment, snow.
+const RIVER: [f32; 3] = [0.14, 0.30, 0.44];
+const FLOODWATER: [f32; 3] = [0.30, 0.34, 0.34];
+const SAND: [f32; 3] = [0.66, 0.59, 0.43];
+const SNOW: [f32; 3] = [0.92, 0.94, 0.97];
+/// Snow shows below this temperature index (matches the sim's SNOW_T).
+const SNOW_T: f64 = crate::sim::world::SNOW_T;
 
 const MUSHROOM: [f32; 3] = [0.78, 0.52, 0.34];
 const MUSHROOM_ON_CHAR: [f32; 3] = [0.62, 0.58, 0.48];
@@ -171,7 +177,7 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
         let base = CLOUD_COLORS[storm.kind as usize];
         let inst = Instance {
             // Cloud decks sit above the highest ridge.
-            pos: [c[0] as f32, c[1] as f32, tr.altitude + (RENDER_RELIEF * world.params().terrain) as f32],
+            pos: [c[0] as f32, c[1] as f32, tr.altitude + world.max_elevation()],
             scale: s,
             prev_scale: s,
             color: [base[0] * jitter, base[1] * jitter, base[2] * jitter],
@@ -230,6 +236,28 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                 ground[1] * (1.0 - 0.13 * w),
                 ground[2] * (1.0 - 0.02 * w) + 0.015 * w,
             ];
+        }
+        // Fresh flood sediment: a pale sand bar fading as it weathers.
+        let sand = world.sediment(i);
+        if sand > 0.0 {
+            ground = lerp3(ground, SAND, sand * 0.7);
+        }
+        // Snow lies where the ground is cold (the high mountains, colder
+        // in cold years).
+        let snow = ((SNOW_T - world.temperature(i)) / 0.05).clamp(0.0, 1.0) as f32;
+        if snow > 0.0 {
+            ground = lerp3(ground, SNOW, snow * 0.85);
+        }
+        // Rivers are open water; a flood spreads muddy water over the
+        // floodplain.
+        if world.is_channel(i) {
+            ground = [
+                RIVER[0] * (0.95 + 0.1 * cell_noise(i, 7)),
+                RIVER[1] * (0.95 + 0.1 * cell_noise(i, 7)),
+                RIVER[2],
+            ];
+        } else if world.inundated(i) {
+            ground = lerp3(ground, FLOODWATER, 0.75);
         }
         out.ground.push(Instance { pos, scale: 1.0, prev_scale: 1.0, color: ground, slim: 0.0 });
         if world.bolt_active(i) {
@@ -345,12 +373,16 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                 });
             }
             Cell::Grass => {
-                let mature = 0.7 + 0.5 * cell_noise(i, 3) as f64;
+                let kind = world.grass_kind(i) as usize;
+                // Grazers crop palatable swards short (lawns near water).
+                let cropped = 1.0
+                    - 0.45 * world.grazing_intensity(i)
+                        * crate::sim::world::GRASS_TABLE[kind].palatability;
+                let mature = (0.7 + 0.5 * cell_noise(i, 3) as f64) * cropped;
                 let tint = (age as f64 / params.grass_mean_life.max(1) as f64).min(1.0) as f32;
                 let scaled = |a: u64| {
                     (grow_scale(a, GRASS_GROW_TICKS, mature) as f64 * wilt_mult(brown)) as f32
                 };
-                let kind = world.grass_kind(i) as usize;
                 out.grass[kind].push(Instance {
                     pos,
                     scale: scaled(age),
@@ -392,7 +424,7 @@ mod tests {
 
     /// Defaults on the 64×64 map the tests were calibrated on.
     fn legacy() -> crate::sim::world::Params {
-        crate::sim::world::Params { width: 64, height: 64, ..crate::sim::world::Params::default() }
+        crate::sim::world::Params::legacy_map()
     }
 
     impl FrameInstances {

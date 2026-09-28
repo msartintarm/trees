@@ -222,12 +222,13 @@ impl Camera {
     }
 }
 
-/// Orthographic sun view-projection covering a ground rectangle (with
-/// terrain and canopy height), for the shadow map. `sun` points from the
-/// surface toward the light. Column-major, WebGPU clip space (z in [0, 1]).
-pub fn light_view_proj(sun: [f32; 3], bounds: (f64, f64, f64, f64)) -> [f32; 16] {
+/// Orthographic sun view-projection covering a ground rectangle from z = 0
+/// up to `top` (highest terrain) plus canopy height, for the shadow map.
+/// `sun` points from the surface toward the light. Column-major, WebGPU
+/// clip space (z in [0, 1]).
+pub fn light_view_proj(sun: [f32; 3], bounds: (f64, f64, f64, f64), top: f64) -> [f32; 16] {
     let (min_x, min_y, max_x, max_y) = bounds;
-    let c = [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 1.5 + crate::sim::terrain::RENDER_RELIEF / 2.0];
+    let c = [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 1.5 + top / 2.0];
     let sun64 = normalize([sun[0] as f64, sun[1] as f64, sun[2] as f64]);
     let dist = 90.0 + (max_x - min_x).max(max_y - min_y);
     let eye = [c[0] + sun64[0] * dist, c[1] + sun64[1] * dist, c[2] + sun64[2] * dist];
@@ -238,7 +239,7 @@ pub fn light_view_proj(sun: [f32; 3], bounds: (f64, f64, f64, f64)) -> [f32; 16]
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for &x in &[min_x - 2.0, max_x + 2.0] {
         for &y in &[min_y - 2.0, max_y + 2.0] {
-            for &z in &[-0.3, crate::sim::terrain::RENDER_RELIEF + 5.0] {
+            for &z in &[-0.3, top + 5.0] {
                 let d = [x - eye[0], y - eye[1], z - eye[2]];
                 let v = [dot(s, d), dot(u, d), -dot(fwd, d)]; // v[2] = distance along -fwd
                 for k in 0..3 {
@@ -365,11 +366,12 @@ mod tests {
 
     #[test]
     fn the_sun_matrix_covers_the_whole_world() {
-        let m = light_view_proj([0.36, -0.42, 0.83], Grid::LEGACY.world_bounds());
+        // Mountains up to 33 units: the box must still hold the treetops.
+        let m = light_view_proj([0.36, -0.42, 0.83], Grid::LEGACY.world_bounds(), 33.0);
         let (min_x, min_y, max_x, max_y) = Grid::LEGACY.world_bounds();
         for &x in &[min_x, max_x] {
             for &y in &[min_y, max_y] {
-                for &z in &[0.0, 4.5] {
+                for &z in &[0.0, 4.5, 35.0] {
                     let mut clip = [0.0f64; 4];
                     for row in 0..4 {
                         clip[row] = m[row] as f64 * x

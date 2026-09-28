@@ -16,6 +16,8 @@ const base: StatsSnapshot = {
   moisture: 0.41,
   mast: false,
   diversity: 4.83,
+  localDiversity: 3.07,
+  flooding: false,
   playing: true,
   selectedSpeed: 2,
   actualSpeed: 2,
@@ -24,15 +26,14 @@ const base: StatsSnapshot = {
   seed: 7,
 };
 
+const HEAD = "256×256 · tick 1,234 · trees 512 · grass 800 · bare 2,784 · 🌿 4.8 types (local 3.1)";
+
 test("statsText formats the full readout", () => {
-  assert.equal(statsText(base), "256×256 · tick 1,234 · trees 512 · grass 800 · bare 2,784 · 🌿 4.8 types · ☀ 64% 💧 41% · ▶ 2×");
+  assert.equal(statsText(base), `${HEAD} · ☀ 64% 💧 41% · ▶ 2×`);
 });
 
 test("active fires appear in the readout", () => {
-  assert.equal(
-    statsText({ ...base, burning: 37 }),
-    "256×256 · tick 1,234 · trees 512 · grass 800 · bare 2,784 · 🌿 4.8 types · ☀ 64% 💧 41% · 🔥 37 · ▶ 2×",
-  );
+  assert.equal(statsText({ ...base, burning: 37 }), `${HEAD} · ☀ 64% 💧 41% · 🔥 37 · ▶ 2×`);
 });
 
 test("paused runs show the pause glyph", () => {
@@ -40,29 +41,24 @@ test("paused runs show the pause glyph", () => {
 });
 
 test("active storms appear in the readout", () => {
-  assert.equal(
-    statsText({ ...base, storms: 2, burning: 5 }),
-    "256×256 · tick 1,234 · trees 512 · grass 800 · bare 2,784 · 🌿 4.8 types · ☀ 64% 💧 41% · ⛈ 2 · 🔥 5 · ▶ 2×",
-  );
+  assert.equal(statsText({ ...base, storms: 2, burning: 5 }), `${HEAD} · ☀ 64% 💧 41% · ⛈ 2 · 🔥 5 · ▶ 2×`);
+});
+
+test("river floods show a badge", () => {
+  assert.equal(statsText({ ...base, flooding: true, storms: 1 }), `${HEAD} · ☀ 64% 💧 41% · ⛈ 1 · 🌊 flood · ▶ 2×`);
 });
 
 test("pest outbreaks appear in the readout", () => {
-  assert.equal(
-    statsText({ ...base, infested: 42, burning: 3 }),
-    "256×256 · tick 1,234 · trees 512 · grass 800 · bare 2,784 · 🌿 4.8 types · ☀ 64% 💧 41% · 🔥 3 · 🐛 42 · ▶ 2×",
-  );
+  assert.equal(statsText({ ...base, infested: 42, burning: 3 }), `${HEAD} · ☀ 64% 💧 41% · 🔥 3 · 🐛 42 · ▶ 2×`);
 });
 
 test("mast years show an acorn badge", () => {
-  assert.equal(
-    statsText({ ...base, mast: true }),
-    "256×256 · tick 1,234 · trees 512 · grass 800 · bare 2,784 · 🌿 4.8 types · ☀ 64% 💧 41% 🌰 · ▶ 2×",
-  );
+  assert.equal(statsText({ ...base, mast: true }), `${HEAD} · ☀ 64% 💧 41% 🌰 · ▶ 2×`);
 });
 
-test("biodiversity reads as effective types with one decimal", () => {
-  assert.equal(diversityLabel({ ...base, diversity: 1 }), "🌿 1.0 types");
-  assert.equal(diversityLabel({ ...base, diversity: 5.26 }), "🌿 5.3 types");
+test("biodiversity reads whole-map and local effective types", () => {
+  assert.equal(diversityLabel({ ...base, diversity: 1, localDiversity: 1 }), "🌿 1.0 types (local 1.0)");
+  assert.equal(diversityLabel({ ...base, diversity: 5.26, localDiversity: 2.96 }), "🌿 5.3 types (local 3.0)");
 });
 
 test("a map that can't keep up shows its achieved speed", () => {

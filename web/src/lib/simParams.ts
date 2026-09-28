@@ -27,6 +27,9 @@ export type SimParams = {
   pestStrength: number;
   browse: number;
   competition: number;
+  climateZones: number;
+  rivers: number;
+  grazing: number;
   seedTreeP: number;
   seedGrassP: number;
   /** Map size in tiles per side (applies on Reseed). */
@@ -58,6 +61,9 @@ export const DEFAULT_PARAMS: SimParams = {
   pestStrength: 1.0,
   browse: 1.0,
   competition: 1.0,
+  climateZones: 1.0,
+  rivers: 1.0,
+  grazing: 1.0,
   seedTreeP: 0.0,
   seedGrassP: 0.0,
   width: 256,
@@ -103,8 +109,9 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-/** Key of the preset matching `params` exactly, or null for a custom mix. */
-/** Map size is independent of the ecology: presets neither set nor match it. */
+/** Map size is independent of the ecology: presets neither set nor match
+ * it (`matchingPreset` returns the preset matching every other field, or
+ * null for a custom mix). */
 const MAP_KEYS: ReadonlySet<keyof SimParams> = new Set(["width", "height"]);
 
 export function matchingPreset(params: SimParams): string | null {
@@ -154,6 +161,9 @@ export const PARAM_FIELDS: ParamField[] = [
   { key: "pestStrength", label: "Pest outbreaks %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "browse", label: "Deer browsing %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "competition", label: "Neighbor competition %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "climateZones", label: "Climate zones %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "rivers", label: "Rivers & floods %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "grazing", label: "Grazing %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "seedTreeP", label: "Seed trees %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "seedGrassP", label: "Seed grass %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "width", label: "Map width (tiles)", kind: "int", min: 8, max: 512, step: 8, appliesOnReseed: true },

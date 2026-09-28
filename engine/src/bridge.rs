@@ -9,7 +9,7 @@ use wasm_bindgen::prelude::*;
 use crate::render::camera::{light_view_proj, Camera};
 use crate::render::scene::{build_instances, FrameInstances};
 use crate::sim::clock::{PlayState, SimClock};
-use crate::sim::terrain::{RENDER_RELIEF, SUN_DIR};
+use crate::sim::terrain::SUN_DIR;
 use crate::sim::world::{Brush, GrassKind, Params, Species, World, GRASS_KIND_COUNT};
 
 /// Sim seconds per tick: 10 ticks/s at 1× speed.
@@ -202,6 +202,9 @@ impl Simulation {
         pest_strength: f64,
         browse: f64,
         competition: f64,
+        climate_zones: f64,
+        rivers: f64,
+        grazing: f64,
         seed_tree_p: f64,
         seed_grass_p: f64,
         width: u32,
@@ -231,6 +234,9 @@ impl Simulation {
             pest_strength,
             browse,
             competition,
+            climate_zones,
+            rivers,
+            grazing,
             seed_tree_p,
             seed_grass_p,
             width,
@@ -271,7 +277,8 @@ impl Simulation {
     /// looking at (16 floats, column-major).
     pub fn light_view_proj(&self) -> Vec<f32> {
         let sun = SUN_DIR.map(|v| v as f32);
-        light_view_proj(sun, self.camera.shadow_bounds(self.world.grid())).to_vec()
+        let top = self.world.max_elevation() as f64;
+        light_view_proj(sun, self.camera.shadow_bounds(self.world.grid()), top).to_vec()
     }
 
     /// Current map size in tiles (changes only on reseed).
@@ -314,6 +321,16 @@ impl Simulation {
         self.world.diversity().1 as f32
     }
 
+    /// Local (16×16-tile window) effective types, α diversity.
+    pub fn local_diversity(&self) -> f32 {
+        self.world.local_diversity() as f32
+    }
+
+    /// A river flood pulse is under way (HUD badge).
+    pub fn flooding(&self) -> bool {
+        self.world.is_flooding()
+    }
+
     /// Global illumination for the renderer: 1.0 at the neutral climate.
     pub fn light_level(&self) -> f32 {
         (0.7 + 0.6 * self.world.sun()) as f32
@@ -325,7 +342,7 @@ impl Simulation {
     /// Marches the ray over the raised tile tops, so a ridge in front of a
     /// valley is what gets picked.
     pub fn pick_tile(&self, bx: f32, by: f32) -> i32 {
-        let top = RENDER_RELIEF * self.world.params().terrain + 0.01;
+        let top = self.world.max_elevation() as f64 + 0.01;
         self.camera
             .pick_heightfield(bx as f64, by as f64, top, |x, y| {
                 self.world.grid().pick(x, y).map(|i| self.world.elevation(i) as f64)

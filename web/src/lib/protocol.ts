@@ -71,6 +71,10 @@ export type StatsSnapshot = {
   mast: boolean;
   /** Trees carrying a pest/pathogen outbreak (oak wilt, bark beetles). */
   infested: number;
+  /** Effective types within 16×16-tile windows (local, α diversity). */
+  localDiversity: number;
+  /** A river flood pulse is under way. */
+  flooding: boolean;
   /** Effective number of plant types (e^Shannon over trees + grass kinds). */
   diversity: number;
   playing: boolean;

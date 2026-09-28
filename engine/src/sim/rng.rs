@@ -49,6 +49,8 @@ pub enum Stream {
     Pest = 19,
     /// Browsers (deer) eating saplings.
     Browse = 20,
+    /// River flood pulses.
+    Flood = 21,
 }
 
 #[inline]

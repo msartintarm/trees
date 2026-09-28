@@ -39,6 +39,9 @@ export type Sim = {
     pestStrength: number,
     browse: number,
     competition: number,
+    climateZones: number,
+    rivers: number,
+    grazing: number,
     seedTreeP: number,
     seedGrassP: number,
     width: number,
@@ -61,6 +64,8 @@ export type Sim = {
   light_level(): number;
   mast_year(): boolean;
   diversity(): number;
+  local_diversity(): number;
+  flooding(): boolean;
   eye(): Float32Array;
   pick_tile(bx: number, by: number): number;
   paint_at(bx: number, by: number, brush: number, species: number, grass: number): number;

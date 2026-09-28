@@ -13,7 +13,7 @@ const CELLS: usize = 4096;
 
 /// Defaults on the 64×64 map the regime bands were measured on.
 fn legacy() -> Params {
-    Params { width: 64, height: 64, ..Params::default() }
+    Params::legacy_map()
 }
 
 fn run_and_sample(
@@ -380,6 +380,9 @@ fn absurd_parameters_behave_exactly_like_their_sanitized_form() {
         pest_strength: 9.0,
         browse: f64::NAN,
         competition: -2.0,
+        climate_zones: 5.0,
+        rivers: -1.0,
+        grazing: f64::NAN,
         seed_tree_p: 2.0,
         seed_grass_p: -1.0,
         width: 64,
