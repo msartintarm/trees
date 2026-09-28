@@ -342,6 +342,41 @@ climate so cold years don't blanket the lowlands.
 Known: oak stays scarce under default pressures; small maps sort acacia
 by temperature rather than excluding it from their modest heights.
 
+## P26 — Physiology from ../plant, inspector, roots view, cloud genera ✅
+Ported the individual-plant mechanisms that matter at landscape scale:
+per-tree carbon reserves (Liebig income × species thermal bell vs Q10
+upkeep acclimated to the site climate), age-deepening roots with species
+taproots (tree water includes only the groundwater the roots reach),
+duration-based flood tolerance, climate-triggered pests (beetles on
+starved pines, wet-year root rot on oaks), annual masting that exhausts
+oaks, deciduous spring light, death-cause attribution (named hazard
+components) with cause-tinted husks and a HUD tally. Calibration: first
+cut starved everything (no respiration acclimation, adult-sized sapling
+upkeep, mast cost ≈ the whole budget, crowd shading too strong); fixed
+with acclimated Q10, sapling cost 0.6, mast 0.015, crowd light 0.05, and a
+longer flat background lifetime once mechanistic deaths are modeled.
+Result (128², seed 7): γ 4.10 → 4.58, oak 5 → 80 trees, all four species
+thriving. UI: 🔍 inspector card, 🌱 roots view (glass ground + root
+meshes), ☠ death line, 🍂 seasonal speed, heat-scaled sunlight/sky/sun
+disc, edge-tree lean, four distinct cloud meshes (culled back faces,
+depth-writing with fringe discard). Renderer takes one packed stream
+buffer instead of 30 arguments.
+
+## P27 — Dynamic clouds ✅
+Clouds carry water (evaporation from wet ground/rivers, orographic lift;
+losses to rain, lee descent, dry-air evaporation) and change genus:
+cumulus → cumulonimbus (heating or forced ascent) → anvil cirrus;
+cirrus → nimbostratus (front) → fair-weather cumulus; drying clouds
+evaporate. In-place convective initiation and gust-front daughter cells;
+orographic rain on windward slopes. Rain and lightning gated by stage.
+Tuning via `examples/cloud_probe.rs`: first cut barely formed clouds
+in place and put all rain in the hot lowlands (towering needed warm
+ground); added forced-ascent towering and orographic rain; then multicell
+chain reactions overcrowded the 256² sky (each storm ≈ one daughter) —
+damped to static-comparable cloud counts and rain totals. Render morphs
+between genus meshes (opacity cross-fade + altitude glide), fades drying
+clouds; HUD sky census + weather ticker. Legacy map: dynamics off.
+
 ## Ideas / not done
 - True speciation: reproductive isolation between diverged lineages (currently traits blend freely)
 - Pioneer persistence in closed forests (gap dynamics beyond windthrow)

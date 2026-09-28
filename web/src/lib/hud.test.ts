@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { diversityLabel, speedLabel, statsText } from "./hud.ts";
+import { cloudsText, deathsText, diversityLabel, newestCloudEvent, speedLabel, statsText } from "./hud.ts";
 import type { StatsSnapshot } from "./protocol.ts";
 
 const base: StatsSnapshot = {
@@ -17,6 +17,10 @@ const base: StatsSnapshot = {
   mast: false,
   diversity: 4.83,
   localDiversity: 3.07,
+  deathsRecent: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+  heat: 0.5,
+  clouds: [0, 0, 0, 0],
+  cloudEvents: [0, 0, 0, 0, 0, 0, 0],
   flooding: false,
   playing: true,
   selectedSpeed: 2,
@@ -69,4 +73,24 @@ test("a map that can't keep up shows its achieved speed", () => {
 
 test("fractional speeds keep one decimal", () => {
   assert.equal(speedLabel({ ...base, selectedSpeed: 0.5 }), "▶ 0.5×");
+  assert.equal(speedLabel({ ...base, selectedSpeed: 0.05, actualSpeed: 0.05 }), "▶ 0.05×");
+});
+
+test("recent deaths list the top three causes", () => {
+  assert.equal(deathsText(base), "");
+  const deathsRecent = [4.2, 1.0, 9.6, 0, 0, 12.4, 0, 0.3, 0, 0, 0];
+  assert.equal(deathsText({ ...base, deathsRecent }), "☠ pests 12 · starvation 10 · old age 4");
+});
+
+test("the sky reads by genus", () => {
+  assert.equal(cloudsText(base), "");
+  assert.equal(cloudsText({ ...base, clouds: [6, 1, 0, 2] }), "☁ 6 cumulus · 1 thunderhead · 2 cirrus");
+});
+
+test("the weather ticker announces new transitions, not evaporation", () => {
+  const a = [3, 1, 0, 0, 0, 4, 0];
+  assert.equal(newestCloudEvent(null, a), null);
+  assert.equal(newestCloudEvent(a, a), null);
+  assert.equal(newestCloudEvent(a, [3, 2, 0, 0, 0, 4, 0]), "⛈ a cumulus towered into a thunderhead");
+  assert.equal(newestCloudEvent(a, [3, 1, 0, 0, 0, 9, 0]), null);
 });

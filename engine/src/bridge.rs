@@ -7,10 +7,10 @@
 use wasm_bindgen::prelude::*;
 
 use crate::render::camera::{light_view_proj, Camera};
-use crate::render::scene::{build_instances, FrameInstances};
+use crate::render::scene::{build_view, View};
 use crate::sim::clock::{PlayState, SimClock};
 use crate::sim::terrain::SUN_DIR;
-use crate::sim::world::{Brush, GrassKind, Params, Species, World, GRASS_KIND_COUNT};
+use crate::sim::world::{Brush, GrassKind, Params, Species, World};
 
 /// Sim seconds per tick: 10 ticks/s at 1× speed.
 const DT: f64 = 0.1;
@@ -44,9 +44,11 @@ pub struct Simulation {
     clock: SimClock,
     camera: Camera,
     seed: u32,
-    /// Instance streams built once per frame by `prepare_frame` (the
-    /// per-stream getters only copy out of it).
-    frame: FrameInstances,
+    /// Instance streams packed once per frame by `prepare_frame`.
+    frame_bytes: Vec<u8>,
+    frame_counts: Vec<u32>,
+    /// The roots view toggle.
+    roots_view: bool,
     /// Smoothed wall-clock cost of one tick, ms.
     tick_ms: f64,
     /// Smoothed achieved speed (sim seconds per real second).
@@ -64,7 +66,9 @@ impl Simulation {
             clock: SimClock::new(DT),
             camera,
             seed,
-            frame: FrameInstances::default(),
+            frame_bytes: Vec::new(),
+            frame_counts: Vec::new(),
+            roots_view: false,
             tick_ms: 1.0,
             actual_speed: 1.0,
         }
@@ -205,6 +209,9 @@ impl Simulation {
         climate_zones: f64,
         rivers: f64,
         grazing: f64,
+        physiology: f64,
+        seasons: f64,
+        cloud_dynamics: f64,
         seed_tree_p: f64,
         seed_grass_p: f64,
         width: u32,
@@ -237,6 +244,9 @@ impl Simulation {
             climate_zones,
             rivers,
             grazing,
+            physiology,
+            seasons,
+            cloud_dynamics,
             seed_tree_p,
             seed_grass_p,
             width,
@@ -333,7 +343,7 @@ impl Simulation {
 
     /// Global illumination for the renderer: 1.0 at the neutral climate.
     pub fn light_level(&self) -> f32 {
-        (0.7 + 0.6 * self.world.sun()) as f32
+        (0.6 + 0.8 * self.world.sun()) as f32
     }
 
     // ---- interaction (bx/by are backing-store pixels) ----
@@ -372,70 +382,81 @@ impl Simulation {
         index
     }
 
-    // ---- per-frame instance buffers (copied out, bytemuck-cast) ----
+    // ---- per-frame instance streams (copied out, bytemuck-cast) ----
 
-    pub fn ground_instances(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.ground).to_vec()
-    }
-
-    pub fn ground_instance_count(&self) -> u32 {
-        self.frame.ground.len() as u32
-    }
-
-    /// Build this frame's instance streams once; call before the getters.
+    /// Build this frame's instance streams once, then read them with
+    /// `frame_bytes`/`frame_counts`. The display view: seasons show at
+    /// slow speeds (years flash by faster than that), the sun and light
+    /// follow the heat, and the roots view is a toggle.
     pub fn prepare_frame(&mut self) {
-        self.frame = build_instances(&self.world, self.clock.tick(), self.clock.alpha() as f32);
+        let speed = self.clock.speed();
+        let season_amp = (((0.25 - speed) / 0.2).clamp(0.0, 1.0) * self.world.params().seasons) as f32;
+        let view = View {
+            season_phase: self.clock.alpha() as f32,
+            season_amp,
+            roots: self.roots_view,
+            heat: self.heat(),
+        };
+        let frame = build_view(&self.world, self.clock.tick(), self.clock.alpha() as f32, &view);
+        let (bytes, counts) = frame.pack();
+        self.frame_bytes = bytes;
+        self.frame_counts = counts;
     }
 
-    /// Per-species tree stream (0 acacia, 1 oak, 2 pine, 3 willow).
-    pub fn tree_instances(&self, species: u8) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.trees[(species as usize).min(3)]).to_vec()
+    /// Every instance stream packed in `scene::stream` order.
+    pub fn frame_bytes(&self) -> Vec<u8> {
+        self.frame_bytes.clone()
     }
 
-    /// Instance counts include standing-dead husks, so they can exceed the
-    /// live-population counts the HUD shows.
-    pub fn tree_instance_count(&self, species: u8) -> u32 {
-        self.frame.trees[(species as usize).min(3)].len() as u32
+    /// Instance count per stream.
+    pub fn frame_counts(&self) -> Vec<u32> {
+        self.frame_counts.clone()
     }
 
-    /// Per-kind grass stream (0 bunchgrass, 1 sod, 2 sedge, 3 annual).
-    pub fn grass_instances(&self, kind: u8) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.grass[(kind as usize).min(GRASS_KIND_COUNT - 1)]).to_vec()
+    /// Heat, 0..1, from the climate's sun signal: brighter, warmer light
+    /// and a bigger, gold sun when high.
+    pub fn heat(&self) -> f32 {
+        ((self.world.sun() - 0.2) / 0.6).clamp(0.0, 1.0) as f32
     }
 
-    pub fn grass_instance_count(&self, kind: u8) -> u32 {
-        self.frame.grass[(kind as usize).min(GRASS_KIND_COUNT - 1)].len() as u32
+    /// Show the root systems under glass ground.
+    pub fn set_roots_view(&mut self, on: bool) {
+        self.roots_view = on;
     }
 
-    pub fn mushroom_instances(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.mushrooms).to_vec()
+    pub fn roots_view(&self) -> bool {
+        self.roots_view
     }
 
-    pub fn mushroom_instance_count(&self) -> u32 {
-        self.frame.mushrooms.len() as u32
+    /// The tile inspector: every factor bearing on the tile under a screen
+    /// point, as text lines ("" on a miss).
+    pub fn inspect_at(&self, bx: f32, by: f32) -> String {
+        let index = self.pick_tile(bx, by);
+        if index < 0 {
+            return String::new();
+        }
+        self.world.inspect(index as usize, self.clock.tick())
     }
 
-    pub fn cloud_instances(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.clouds).to_vec()
+    /// Clouds on the map by genus: [cumulus, cumulonimbus, nimbostratus,
+    /// cirrus].
+    pub fn cloud_counts(&self) -> Vec<u32> {
+        let mut c = vec![0u32; 4];
+        for s in self.world.storms() {
+            c[s.kind as usize] += 1;
+        }
+        c
     }
 
-    pub fn cloud_instance_count(&self) -> u32 {
-        self.frame.clouds.len() as u32
+    /// Cloud lifecycle events since the world began (CloudEvent order:
+    /// formed, towered, collapsed, front, broke up, evaporated, daughter).
+    pub fn cloud_events(&self) -> Vec<u32> {
+        self.world.cloud_events().to_vec()
     }
 
-    pub fn sheet_instances(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.sheets).to_vec()
-    }
-
-    pub fn sheet_instance_count(&self) -> u32 {
-        self.frame.sheets.len() as u32
-    }
-
-    pub fn bolt_instances(&self) -> Vec<u8> {
-        bytemuck::cast_slice(&self.frame.bolts).to_vec()
-    }
-
-    pub fn bolt_instance_count(&self) -> u32 {
-        self.frame.bolts.len() as u32
+    /// Tree deaths by cause over roughly the last 50 ticks (see
+    /// `DeathCause` for the order).
+    pub fn deaths_recent(&self) -> Vec<f32> {
+        self.world.deaths_recent().to_vec()
     }
 }

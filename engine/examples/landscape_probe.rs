@@ -4,7 +4,7 @@
 //! with the features on vs off.
 //!
 //!     cargo run --release --example landscape_probe -- 256 7 8000
-use tree_engine::sim::world::{Cell, Params, World, GRASS_KIND_COUNT, SPECIES_COUNT};
+use tree_engine::sim::world::{Cell, DeathCause, Params, World, DEATH_CAUSE_COUNT, GRASS_KIND_COUNT, SPECIES_COUNT};
 
 const TYPES: usize = SPECIES_COUNT + GRASS_KIND_COUNT;
 const NAMES: [&str; TYPES] = ["acacia", "oak", "pine", "willow", "bunch", "sod", "sedge", "annual"];
@@ -17,7 +17,8 @@ fn main() {
     let base = Params { width: side, height: side, seed_tree_p: 0.02, seed_grass_p: 0.10, ..Params::default() };
     for (label, p) in [
         ("features ON", base),
-        ("features OFF", Params { climate_zones: 0.0, rivers: 0.0, grazing: 0.0, ..base }),
+        ("no physiology", Params { physiology: 0.0, seasons: 0.0, ..base }),
+        ("features OFF", Params { climate_zones: 0.0, rivers: 0.0, grazing: 0.0, physiology: 0.0, seasons: 0.0, ..base }),
     ] {
         if a.get(4).is_some_and(|x| x == "on") && label.contains("OFF") {
             continue;
@@ -39,6 +40,35 @@ fn main() {
         let snow = (0..n).filter(|&i| w.temperature(i) < 0.13).count();
         println!("== {label} {side}² seed {seed}: γ {:.2} α {:.2} β {:.2} | channels {:.1}% | floods {floods} | snowy tiles {:.1}%",
             g / k, al / k, g / al, 100.0 * channels as f64 / n as f64, 100.0 * snow as f64 / n as f64);
+        let deaths = w.deaths_total();
+        let total: u32 = deaths.iter().sum();
+        println!("   tree deaths by cause: {}", (0..DEATH_CAUSE_COUNT)
+            .filter(|&k| deaths[k] > 0)
+            .map(|k| format!("{} {:.0}%", DeathCause::from_u8(k as u8).name(), 100.0 * deaths[k] as f64 / total.max(1) as f64))
+            .collect::<Vec<_>>().join(", "));
+        for sp in 0..SPECIES_COUNT {
+            let r: Vec<f32> = (0..n).filter(|&i| w.state(i) == Cell::Tree && w.species(i) as usize == sp).map(|i| w.reserve(i)).collect();
+            if !r.is_empty() {
+                print!("   {} reserve {:.2} (n {})", NAMES[sp], r.iter().sum::<f32>() / r.len() as f32, r.len());
+            }
+        }
+        println!();
+        // Standing husks by species and cause: who is dying of what.
+        let mut husks = [[0u32; DEATH_CAUSE_COUNT]; SPECIES_COUNT];
+        for i in 0..n {
+            if let Some(r) = w.remains(i) {
+                if r.tree {
+                    husks[r.species as usize][r.cause as usize] += 1;
+                }
+            }
+        }
+        for sp in 0..SPECIES_COUNT {
+            let t: u32 = husks[sp].iter().sum();
+            if t > 0 {
+                println!("   {} husks: {}", NAMES[sp], (0..DEATH_CAUSE_COUNT).filter(|&k| husks[sp][k] > 0)
+                    .map(|k| format!("{} {}", DeathCause::from_u8(k as u8).name(), husks[sp][k])).collect::<Vec<_>>().join(", "));
+            }
+        }
         // Zonation: composition by altitude band (share of each band's tiles).
         let amp = (0..n).map(|i| w.altitude(i)).fold(0.0f32, f32::max).max(1e-6);
         println!("   altitude band  {}", NAMES.iter().map(|s| format!("{s:>7}")).collect::<String>());

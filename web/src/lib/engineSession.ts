@@ -14,6 +14,8 @@ export type SessionCallbacks = {
   onReady: (r: ReadyInfo) => void;
   onFrame: (f: { snapshot: StatsSnapshot }) => void;
   onFatal: (message: string) => void;
+  /** The tile inspector's report ("" when the click missed the map). */
+  onInspect: (text: string) => void;
 };
 
 export type SessionHandle = { applyControl(c: Control): void; dispose(): void };
@@ -62,6 +64,10 @@ function snapshot(sim: Sim): StatsSnapshot {
     moisture: sim.moisture(),
     mast: sim.mast_year(),
     diversity: sim.diversity(),
+    deathsRecent: Array.from(sim.deaths_recent()),
+    clouds: Array.from(sim.cloud_counts()),
+    cloudEvents: Array.from(sim.cloud_events()),
+    heat: sim.heat(),
     localDiversity: sim.local_diversity(),
     flooding: sim.flooding(),
     playing: sim.is_playing(),
@@ -114,34 +120,12 @@ export async function startEngineSession(
         sim.view_proj(),
         sim.alpha(),
         sim.light_level(),
+        sim.heat(),
         sim.eye(),
         sim.light_view_proj(),
-        sim.ground_instances(),
-        sim.ground_instance_count(),
-        sim.tree_instances(0),
-        sim.tree_instance_count(0),
-        sim.tree_instances(1),
-        sim.tree_instance_count(1),
-        sim.tree_instances(2),
-        sim.tree_instance_count(2),
-        sim.tree_instances(3),
-        sim.tree_instance_count(3),
-        sim.grass_instances(0),
-        sim.grass_instance_count(0),
-        sim.grass_instances(1),
-        sim.grass_instance_count(1),
-        sim.grass_instances(2),
-        sim.grass_instance_count(2),
-        sim.grass_instances(3),
-        sim.grass_instance_count(3),
-        sim.mushroom_instances(),
-        sim.mushroom_instance_count(),
-        sim.cloud_instances(),
-        sim.cloud_instance_count(),
-        sim.sheet_instances(),
-        sim.sheet_instance_count(),
-        sim.bolt_instances(),
-        sim.bolt_instance_count(),
+        sim.frame_bytes(),
+        sim.frame_counts(),
+        sim.roots_view(),
       );
       cb.onFrame({ snapshot: snapshot(sim) });
     } catch (e) {
@@ -199,6 +183,9 @@ export async function startEngineSession(
           p.climateZones,
           p.rivers,
           p.grazing,
+          p.physiology,
+          p.seasons,
+          p.cloudDynamics,
           p.seedTreeP,
           p.seedGrassP,
           p.width,
@@ -220,6 +207,12 @@ export async function startEngineSession(
         break;
       case "resetCamera":
         sim.reset_camera();
+        break;
+      case "inspect":
+        cb.onInspect(sim.inspect_at(c.bx, c.by));
+        break;
+      case "rootsView":
+        sim.set_roots_view(c.on);
         break;
       case "resize":
         canvas.width = c.w;

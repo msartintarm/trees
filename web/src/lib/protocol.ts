@@ -14,6 +14,33 @@ export const SPECIES_NAMES = ["Acacia", "Oak", "Pine", "Willow"] as const;
 export type GrassKind = 0 | 1 | 2 | 3;
 export const GRASS_NAMES = ["Bunchgrass", "Sod grass", "Sedge", "Annual"] as const;
 
+/** Cloud lifecycle events, in the engine's `CloudEvent` order, as the
+ * weather ticker announces them. */
+export const CLOUD_EVENTS = [
+  "☁ a cumulus bubbled up over warm, moist ground",
+  "⛈ a cumulus towered into a thunderhead",
+  "〰 a spent thunderhead collapsed into anvil cirrus",
+  "🌧 cirrus thickened into a rain sheet — a front arrives",
+  "⛅ a rain sheet broke up into fair-weather cumulus",
+  "· a cloud evaporated",
+  "⛈ a gust front triggered a new storm cell",
+] as const;
+
+/** Tree causes of death, in the engine's `DeathCause` order. */
+export const DEATH_CAUSES = [
+  "old age",
+  "drought",
+  "starvation",
+  "frost",
+  "root rot",
+  "pests",
+  "crowding",
+  "fire",
+  "windthrow",
+  "browsed",
+  "flood scour",
+] as const;
+
 export const BRUSH_CODES: Record<Brush, number> = { clear: 0, grass: 1, tree: 2, fire: 3 };
 
 export type Control =
@@ -28,6 +55,8 @@ export type Control =
   | { type: "panBy"; dx: number; dy: number }
   | { type: "zoom"; factor: number }
   | { type: "resetCamera" }
+  | { type: "inspect"; bx: number; by: number }
+  | { type: "rootsView"; on: boolean }
   | { type: "resize"; w: number; h: number };
 
 export const CONTROL_TYPES: ReadonlySet<string> = new Set([
@@ -42,6 +71,8 @@ export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   "panBy",
   "zoom",
   "resetCamera",
+  "inspect",
+  "rootsView",
   "resize",
 ]);
 
@@ -71,6 +102,14 @@ export type StatsSnapshot = {
   mast: boolean;
   /** Trees carrying a pest/pathogen outbreak (oak wilt, bark beetles). */
   infested: number;
+  /** Tree deaths by cause over roughly the last 50 ticks (DEATH_CAUSES order). */
+  deathsRecent: number[];
+  /** Clouds on the map by genus: [cumulus, cumulonimbus, nimbostratus, cirrus]. */
+  clouds: number[];
+  /** Cloud lifecycle events since the world began (CLOUD_EVENTS order). */
+  cloudEvents: number[];
+  /** Heat, 0..1 (drives the sunlight and the sun disc). */
+  heat: number;
   /** Effective types within 16×16-tile windows (local, α diversity). */
   localDiversity: number;
   /** A river flood pulse is under way. */
@@ -90,6 +129,7 @@ export type StatsSnapshot = {
 export type FromWorker =
   | { type: "ready"; backend: string; seed: number }
   | { type: "frame"; snapshot: StatsSnapshot }
+  | { type: "inspect"; text: string }
   | { type: "fatal"; message: string };
 
 /** One-shot boot blob; the canvas travels in the postMessage transfer list. */

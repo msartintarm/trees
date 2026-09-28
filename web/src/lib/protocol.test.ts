@@ -17,6 +17,8 @@ test("every control variant passes the guard", () => {
     { type: "panBy", dx: 3, dy: -7 },
     { type: "zoom", factor: 1.1 },
     { type: "resetCamera" },
+    { type: "inspect", bx: 10, by: 20 },
+    { type: "rootsView", on: true },
     { type: "resize", w: 800, h: 600 },
   ];
   assert.equal(samples.length, CONTROL_TYPES.size, "one sample per registered type");

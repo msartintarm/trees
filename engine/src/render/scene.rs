@@ -20,6 +20,37 @@ pub struct Instance {
     /// Canopy-race form factor: 0 = open-grown (broad), 1 = fully hemmed
     /// in during youth (tall and thin). Non-tree streams leave it 0.
     pub slim: f32,
+    /// Trees: phototropic lean (horizontal shear per unit height, toward
+    /// open light). Clouds: the wind direction the mesh turns to face.
+    pub lean: [f32; 2],
+}
+
+/// Stream order shared with the renderer: one mesh per stream.
+pub mod stream {
+    pub const GROUND: usize = 0;
+    pub const TREES: [usize; 4] = [1, 2, 3, 4];
+    pub const GRASS: [usize; 4] = [5, 6, 7, 8];
+    pub const MUSHROOMS: usize = 9;
+    /// Cumulus, cumulonimbus, nimbostratus, cirrus (CloudKind order).
+    pub const CLOUDS: [usize; 4] = [10, 11, 12, 13];
+    pub const BOLTS: usize = 14;
+    pub const ROOTS: usize = 15;
+    pub const SUN: usize = 16;
+}
+pub const STREAM_COUNT: usize = 17;
+
+/// Display options that don't touch the simulation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct View {
+    /// Position within the year, 0..1 (0 = start of spring).
+    pub season_phase: f32,
+    /// How strongly the seasons show (0 at fast speeds, where years flash
+    /// by, up to 1 at the slow seasonal speeds).
+    pub season_amp: f32,
+    /// The roots view: glass ground, root systems drawn beneath it.
+    pub roots: bool,
+    /// Heat, 0..1 (the sun's size and glow).
+    pub heat: f32,
 }
 
 /// Ticks a plant takes to reach full size.
@@ -107,6 +138,49 @@ const PEST_BRONZE: [f32; 3] = [0.55, 0.32, 0.12];
 const ACORN: [f32; 3] = [0.62, 0.50, 0.20];
 /// Rust-brown pine-needle carpet on the ground.
 const NEEDLES: [f32; 3] = [0.46, 0.27, 0.13];
+/// Husk colors by cause of death: beetle-killed pines turn rust red (the
+/// "red attack" stage), drought snags bleach pale, frost-killed crowns
+/// brown, drowned ones dark and waterstained.
+const RED_ATTACK: [f32; 3] = [0.64, 0.28, 0.12];
+const DROUGHT_SNAG: [f32; 3] = [0.64, 0.60, 0.52];
+const FROST_SNAG: [f32; 3] = [0.44, 0.32, 0.22];
+const DROWNED_SNAG: [f32; 3] = [0.30, 0.28, 0.24];
+
+fn snag_color(cause: crate::sim::world::DeathCause) -> [f32; 3] {
+    use crate::sim::world::DeathCause::*;
+    match cause {
+        Pests => RED_ATTACK,
+        Drought => DROUGHT_SNAG,
+        Frost => FROST_SNAG,
+        Flood | Scoured => DROWNED_SNAG,
+        _ => SNAG,
+    }
+}
+
+/// Seasonal crown colors: spring flush, autumn color per species
+/// (acacia, oak, pine, willow), bare winter twigs.
+const SPRING_FLUSH: [f32; 3] = [0.58, 0.78, 0.30];
+const AUTUMN: [[f32; 3]; SPECIES_COUNT] = [
+    [0.66, 0.60, 0.30],
+    [0.58, 0.30, 0.10],
+    [0.10, 0.28, 0.24],
+    [0.80, 0.70, 0.22],
+];
+const BARE_TWIGS: [f32; 3] = [0.40, 0.34, 0.28];
+/// How far the snowline drops at the heart of winter (temperature index).
+const SEASON_SNOW: f64 = 0.12;
+/// Phototropic lean per unit of crowding asymmetry (per world unit of
+/// neighbor offset).
+const LEAN_PER_NEIGHBOR: f32 = 0.045;
+/// Roots view colors: dry-soil roots, roots in the groundwater, and the
+/// groundwater itself.
+const ROOT_DRY: [f32; 3] = [0.62, 0.44, 0.26];
+const ROOT_WET: [f32; 3] = [0.30, 0.58, 0.90];
+const GROUNDWATER: [f32; 3] = [0.18, 0.42, 0.88];
+/// The sun disc: mild white and hot gold (over-bright so it glows).
+const SUN_MILD: [f32; 3] = [2.2, 2.2, 2.1];
+const SUN_HOT: [f32; 3] = [3.2, 2.3, 0.9];
+
 /// River water, floodwater over the floodplain, fresh sediment, snow.
 const RIVER: [f32; 3] = [0.14, 0.30, 0.44];
 const FLOODWATER: [f32; 3] = [0.30, 0.34, 0.34];
@@ -134,24 +208,77 @@ pub struct FrameInstances {
     /// One stream per grass functional type (each has its own mesh).
     pub grass: [Vec<Instance>; GRASS_KIND_COUNT],
     pub mushrooms: Vec<Instance>,
-    pub clouds: Vec<Instance>,
-    /// Flat cloud genera (nimbostratus sheets, cirrus wisps).
-    pub sheets: Vec<Instance>,
+    /// One stream per cloud genus (each has its own mesh).
+    pub clouds: [Vec<Instance>; 4],
     pub bolts: Vec<Instance>,
+    /// Root systems (roots view only).
+    pub roots: Vec<Instance>,
+    /// The sun disc.
+    pub sun: Vec<Instance>,
+}
+
+impl FrameInstances {
+    fn stream(&self, k: usize) -> &[Instance] {
+        match k {
+            stream::GROUND => &self.ground,
+            1..=4 => &self.trees[k - 1],
+            5..=8 => &self.grass[k - 5],
+            stream::MUSHROOMS => &self.mushrooms,
+            10..=13 => &self.clouds[k - 10],
+            stream::BOLTS => &self.bolts,
+            stream::ROOTS => &self.roots,
+            _ => &self.sun,
+        }
+    }
+
+    /// All streams as one byte buffer plus per-stream instance counts, in
+    /// `stream` order — what the renderer uploads.
+    pub fn pack(&self) -> (Vec<u8>, Vec<u32>) {
+        let mut bytes = Vec::new();
+        let mut counts = Vec::with_capacity(STREAM_COUNT);
+        for k in 0..STREAM_COUNT {
+            let s = self.stream(k);
+            bytes.extend_from_slice(bytemuck::cast_slice(s));
+            counts.push(s.len() as u32);
+        }
+        (bytes, counts)
+    }
 }
 
 /// `alpha` is the clock's sub-tick blend factor: storms drift on exact
 /// linear paths, so clouds (and their shadows) interpolate smoothly between
 /// ticks without any stored previous position.
 pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
+    build_view(world, tick, alpha, &View::default())
+}
+
+/// Seasonal leaf state for a deciduous crown at `phase` (0 = spring):
+/// (leafiness 0 bare .. 1 full, autumn coloring 0..1, spring flush 0..1).
+fn phenology(phase: f32) -> (f32, f32, f32) {
+    let p = phase.rem_euclid(1.0);
+    if p < 0.15 {
+        (0.3 + 0.7 * p / 0.15, 0.0, 1.0)
+    } else if p < 0.25 {
+        (1.0, 0.0, 1.0 - (p - 0.15) / 0.1)
+    } else if p < 0.55 {
+        (1.0, 0.0, 0.0)
+    } else if p < 0.75 {
+        (1.0 - 0.4 * (p - 0.55) / 0.2, (p - 0.55) / 0.2, 0.0)
+    } else {
+        (0.3, 1.0 - (p - 0.75) / 0.25 * 0.6, 0.0)
+    }
+}
+
+/// Wintriness 0..1 (for grass browning and the snowline).
+fn winter(phase: f32) -> f32 {
+    let p = phase.rem_euclid(1.0);
+    (1.0 - ((p - 0.87).abs() / 0.2)).clamp(0.0, 1.0)
+}
+
+pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameInstances {
     let mut out = FrameInstances {
         ground: Vec::with_capacity(world.grid().cells()),
-        trees: Default::default(),
-        grass: Default::default(),
-        mushrooms: Vec::new(),
-        clouds: Vec::new(),
-        sheets: Vec::new(),
-        bolts: Vec::new(),
+        ..Default::default()
     };
     // Clouds ride the wind: position at `tick` minus the residual of this
     // tick's step gives smooth motion between ticks.
@@ -165,31 +292,47 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
         .map(|s| (render_pos(s), s.radius, s.kind.traits().shadow))
         .collect();
     let t = tick as f64 + alpha as f64;
+    let dynamic = world.params().cloud_dynamics > 0.0;
     for (i, storm) in world.storms().iter().enumerate() {
         let c = render_pos(storm);
-        let tr = storm.kind.traits();
         let age = t - storm.spawned as f64;
         let ramp = (age / 10.0).clamp(0.0, 1.0);
-        let s = (storm.radius / CLOUD_MESH_RADIUS * ramp) as f32;
         let jitter = 0.92 + 0.16 * cell_noise(i * 37 + 5, 6);
-        let base = CLOUD_COLORS[storm.kind as usize];
-        let inst = Instance {
-            // Cloud decks sit above the highest ridge.
-            pos: [c[0] as f32, c[1] as f32, tr.altitude + world.max_elevation()],
-            scale: s,
-            prev_scale: s,
-            color: [base[0] * jitter, base[1] * jitter, base[2] * jitter],
-            // Clouds reuse the form slot for their optical depth (the cloud
-            // shader reads it as τ; see scene.wgsl fs_cloud).
-            slim: tr.optical_depth,
+        // Dynamic clouds fade as they dry out, swell as they fill, and
+        // morph between genera: the old form thins away while the new one
+        // grows in, gliding between their altitudes.
+        let fade = if dynamic { (storm.water / 0.15).clamp(0.0, 1.0) } else { 1.0 };
+        let fill = if dynamic && storm.kind == crate::sim::world::CloudKind::Cumulus {
+            0.75 + 0.45 * storm.water.min(1.0)
+        } else {
+            1.0
         };
-        // Flat genera (the rain sheet and the high wisps) use the sheet
-        // mesh; the puffy genera use the towering one.
-        match storm.kind {
-            crate::sim::world::CloudKind::Nimbostratus | crate::sim::world::CloudKind::Cirrus => {
-                out.sheets.push(inst)
-            }
-            _ => out.clouds.push(inst),
+        let m = storm.morph.clamp(0.0, 1.0);
+        let (old, new) = (storm.from.traits(), storm.kind.traits());
+        let altitude = old.altitude + (new.altitude - old.altitude) * m;
+        // (genus, opacity weight, growth): a settled cloud is one form; a
+        // changing one is its new form growing in over the old thinning out.
+        let parts: Vec<(crate::sim::world::CloudKind, f32, f32)> = if storm.from == storm.kind || m >= 1.0 {
+            vec![(storm.kind, 1.0, 1.0)]
+        } else {
+            vec![(storm.kind, m, 0.55 + 0.45 * m), (storm.from, 1.0 - m, 1.0)]
+        };
+        for (kind, weight, grow) in parts {
+            let tr = kind.traits();
+            let s = (storm.radius / CLOUD_MESH_RADIUS * ramp * fill * grow as f64) as f32;
+            let base = CLOUD_COLORS[kind as usize];
+            out.clouds[kind as usize].push(Instance {
+                // Cloud decks sit above the highest ridge.
+                pos: [c[0] as f32, c[1] as f32, altitude + world.max_elevation()],
+                scale: s,
+                prev_scale: s,
+                color: [base[0] * jitter, base[1] * jitter, base[2] * jitter],
+                // Clouds reuse the form slot for their optical depth (the
+                // cloud shader reads it as τ; see scene.wgsl fs_cloud).
+                slim: tr.optical_depth * weight * fade as f32,
+                // Anvils stream and cirrus streaks lie along this layer's wind.
+                lean: [storm.vel[0] as f32, storm.vel[1] as f32],
+            });
         }
     }
     let grid = world.grid();
@@ -242,7 +385,7 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
         }
         // Snow lies above the snowline: set by altitude, lower on shaded
         // slopes, creeping down in cold years.
-        let snow = world.snow_cover(i);
+        let snow = world.snow_cover_at(i, SEASON_SNOW * winter(view.season_phase) as f64 * view.season_amp as f64);
         if snow > 0.0 {
             ground = lerp3(ground, SNOW, snow * 0.85);
         }
@@ -257,7 +400,11 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
         } else if world.inundated(i) {
             ground = lerp3(ground, FLOODWATER, 0.75);
         }
-        out.ground.push(Instance { pos, scale: 1.0, prev_scale: 1.0, color: ground, slim: 0.0 });
+        if view.roots {
+            // Through the glass: groundwater glows blue beneath the soil.
+            ground = lerp3(ground, GROUNDWATER, world.water_table(i) * 0.8);
+        }
+        out.ground.push(Instance { pos, scale: 1.0, prev_scale: 1.0, color: ground, slim: 0.0, lean: [0.0, 0.0] });
         if world.bolt_active(i) {
             out.bolts.push(Instance {
                 pos,
@@ -265,6 +412,7 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                 prev_scale: 1.0,
                 color: BOLT_WHITE,
                 slim: 0.0,
+                lean: [0.0, 0.0],
             });
         }
 
@@ -284,8 +432,15 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                 pos,
                 scale: (died_scale * r.remaining as f64) as f32,
                 prev_scale: (died_scale * r.remaining_prev as f64) as f32,
-                color: if r.charred { CHARRED } else if r.tree { SNAG } else { STRAW },
+                color: if r.charred {
+                    CHARRED
+                } else if r.tree {
+                    snag_color(r.cause)
+                } else {
+                    STRAW
+                },
                 slim: if r.tree { r.etiolation } else { 0.0 },
+                lean: [0.0, 0.0],
             };
             if r.tree {
                 out.trees[r.species as usize].push(inst);
@@ -307,6 +462,7 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                     prev_scale: s,
                     color: if r.charred { MUSHROOM_ON_CHAR } else { MUSHROOM },
                     slim: 0.0,
+                    lean: [0.0, 0.0],
                 });
             }
         }
@@ -337,18 +493,59 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                     (world.browse_damage(i) * BROWSE_SCAR_MAX as f32).round() as u64 * BROWSE_SETBACK;
                 // A heavy pest load strips the crown.
                 let pest = world.pest_load(i);
-                let crown = 1.0 - 0.3 * pest as f64;
+                // A starving tree's crown thins and pales before it dies
+                // (the reserve is only tracked with physiology on).
+                let starving = if params.physiology > 0.0 {
+                    ((0.5 - world.reserve(i)) / 0.5).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                // Seasons: deciduous crowns flush, color, and go bare.
+                let (leafy, autumn, flush) = phenology(view.season_phase);
+                let decid = tr.deciduous as f32 * view.season_amp;
+                let bare = (1.0 - leafy) * decid;
+                let crown = (1.0 - 0.3 * pest as f64) * (1.0 - 0.3 * starving as f64) * (1.0 - 0.25 * bare as f64);
                 let grow_ticks = TREE_GROW_TICKS * tr.maturity;
                 let scaled = |a: u64| {
                     (grow_scale(a.saturating_sub(setback), grow_ticks, mature) as f64
                         * wilt_mult(wilt)
                         * crown) as f32
                 };
+                // Phototropism: an edge tree leans out toward open light,
+                // away from the side its neighbors crowd.
+                let mut push = [0.0f32; 2];
+                for (dq, dr) in hex::NEIGHBORS {
+                    if let Some(j) = grid.axial_to_index(q + dq, r + dr) {
+                        if world.state(j) == Cell::Tree {
+                            let (nx, ny) = hex::axial_to_world(q + dq, r + dr);
+                            push[0] -= (nx - x) as f32;
+                            push[1] -= (ny - y) as f32;
+                        }
+                    }
+                }
+                let lean = [push[0] * LEAN_PER_NEIGHBOR, push[1] * LEAN_PER_NEIGHBOR];
+                if view.roots {
+                    // Root system: taproot reach by rooting depth; blue
+                    // where it taps the groundwater, brown where it only
+                    // reaches rain-fed soil.
+                    let depth = world.root_depth(i, tick) as f32;
+                    let tapped = (depth * world.water_table(i) * 2.0).clamp(0.0, 1.0);
+                    let rs = 0.2 + 0.8 * depth;
+                    out.roots.push(Instance {
+                        pos,
+                        scale: rs,
+                        prev_scale: rs,
+                        color: lerp3(ROOT_DRY, ROOT_WET, tapped),
+                        slim: 0.0,
+                        lean: [0.0, 0.0],
+                    });
+                }
                 out.trees[sp as usize].push(Instance {
                     pos,
                     scale: scaled(age),
                     prev_scale: scaled(age.saturating_sub(1)),
                     slim: world.etiolation(i),
+                    lean,
                     color: if burning {
                         SCORCH
                     } else {
@@ -366,6 +563,11 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                             c
                         };
                         let c = lerp3(c, PEST_BRONZE, pest * 0.85);
+                        let c = lerp3(c, TREE_WILT, starving * 0.7);
+                        // Seasons: spring flush, autumn color, winter twigs.
+                        let c = lerp3(c, SPRING_FLUSH, flush * decid * 0.6);
+                        let c = lerp3(c, AUTUMN[sp as usize], autumn * decid);
+                        let c = lerp3(c, BARE_TWIGS, bare * 0.9);
                         [c[0] * bright, c[1] * bright, c[2] * bright]
                     },
                 });
@@ -381,20 +583,45 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
                 let scaled = |a: u64| {
                     (grow_scale(a, GRASS_GROW_TICKS, mature) as f64 * wilt_mult(brown)) as f32
                 };
+                let dormant = winter(view.season_phase) * view.season_amp;
                 out.grass[kind].push(Instance {
                     pos,
                     scale: scaled(age),
                     prev_scale: scaled(age.saturating_sub(1)),
                     slim: 0.0,
+                    lean: [0.0, 0.0],
                     color: if burning {
                         SCORCH
                     } else {
-                        lerp3(lerp3(GRASS_YOUNG[kind], GRASS_OLD, tint), GRASS_WILT, brown as f32)
+                        let c = lerp3(lerp3(GRASS_YOUNG[kind], GRASS_OLD, tint), GRASS_WILT, brown as f32);
+                        lerp3(c, STRAW, dormant * 0.7)
                     },
                 });
             }
             Cell::Bare => unreachable!(),
         }
+    }
+    // The sun, out along the light direction over the map: bigger, hotter
+    // and whiter-gold the hotter it is.
+    {
+        let (_, _, max_x, max_y) = grid.world_bounds();
+        let span = max_x.max(max_y);
+        let d = span * 0.9;
+        let sd = crate::sim::terrain::SUN_DIR;
+        let h = view.heat.clamp(0.0, 1.0);
+        let radius = (span * 0.03 * (1.0 + 1.2 * h as f64)) as f32;
+        out.sun.push(Instance {
+            pos: [
+                (max_x / 2.0 + sd[0] * d) as f32,
+                (max_y / 2.0 + sd[1] * d) as f32,
+                (sd[2] * d) as f32,
+            ],
+            scale: radius,
+            prev_scale: radius,
+            color: lerp3(SUN_MILD, SUN_HOT, h),
+            slim: 0.0,
+            lean: [0.0, 0.0],
+        });
     }
     // Cloud shadows, per-genus depth, interpolated with the drift — only
     // the tiles under each cloud are touched (ground[i] is tile i).
@@ -429,16 +656,21 @@ mod tests {
         fn all_grass(&self) -> Vec<Instance> {
             self.grass.concat()
         }
+
+        fn all_clouds(&self) -> Vec<Instance> {
+            self.clouds.concat()
+        }
     }
 
     #[test]
     fn instance_layout_matches_the_shader_stride() {
-        assert_eq!(std::mem::size_of::<Instance>(), 36);
+        assert_eq!(std::mem::size_of::<Instance>(), 44);
         assert_eq!(std::mem::offset_of!(Instance, pos), 0);
         assert_eq!(std::mem::offset_of!(Instance, scale), 12);
         assert_eq!(std::mem::offset_of!(Instance, prev_scale), 16);
         assert_eq!(std::mem::offset_of!(Instance, color), 20);
         assert_eq!(std::mem::offset_of!(Instance, slim), 32);
+        assert_eq!(std::mem::offset_of!(Instance, lean), 36);
     }
 
     #[test]
@@ -603,7 +835,7 @@ mod tests {
         use crate::sim::world::{Brush, Params};
         let mut w = inert_world(21);
         let f = build_instances(&w, 0, 0.0);
-        assert!(f.clouds.is_empty() && f.bolts.is_empty(), "calm world, clear sky");
+        assert!(f.all_clouds().is_empty() && f.bolts.is_empty(), "calm world, clear sky");
 
         use crate::sim::world::CloudKind;
         w.spawn_cloud(CloudKind::Cumulonimbus, [50.0, 50.0], 8.0, 100);
@@ -611,14 +843,14 @@ mod tests {
             w.step(t); // let the wind take hold (and the spawn ramp finish)
         }
         let a = build_instances(&w, 140, 0.0);
-        assert_eq!(a.clouds.len(), 1);
+        assert_eq!(a.all_clouds().len(), 1);
         let b = build_instances(&w, 140, 0.5);
         assert!(
-            (b.clouds[0].pos[0] - a.clouds[0].pos[0]).abs() > 0.0
-                || (b.clouds[0].pos[1] - a.clouds[0].pos[1]).abs() > 0.0,
+            (b.all_clouds()[0].pos[0] - a.all_clouds()[0].pos[0]).abs() > 0.0
+                || (b.all_clouds()[0].pos[1] - a.all_clouds()[0].pos[1]).abs() > 0.0,
             "the cloud should drift smoothly with alpha"
         );
-        assert!(a.clouds[0].pos[2] > 5.0, "clouds float above the canopy");
+        assert!(a.all_clouds()[0].pos[2] > 5.0, "clouds float above the canopy");
 
         // The ground directly beneath the cloud is shadowed vs far ground.
         let center = w.storms()[0].pos;
@@ -848,6 +1080,111 @@ mod tests {
         let mut by_tau: Vec<_> = CLOUD_TABLE.iter().collect();
         by_tau.sort_by(|x, y| x.optical_depth.total_cmp(&y.optical_depth));
         assert!(by_tau.windows(2).all(|w| w[0].shadow >= w[1].shadow));
+    }
+
+    #[test]
+    fn seasons_color_deciduous_crowns_but_not_evergreens() {
+        use crate::sim::world::{Brush, Params};
+        let mut w = inert_world(30);
+        w.set_params(Params { seasons: 1.0, ..w.params() });
+        let (q, r) = hex::offset_to_axial(32, 32);
+        let oak = G.axial_to_index(q, r).unwrap();
+        let pine = G.axial_to_index(q + 6, r).unwrap();
+        w.paint_species(oak, Brush::Tree, Species::Oak, 0);
+        w.paint_species(pine, Brush::Tree, Species::Pine, 0);
+        let crown = |phase: f32, sp: usize| {
+            let v = View { season_phase: phase, season_amp: 1.0, ..View::default() };
+            build_view(&w, 300, 0.0, &v).trees[sp][0].color
+        };
+        let (summer, autumn) = (crown(0.4, 1), crown(0.68, 1));
+        assert!(autumn[0] > summer[0] + 0.1, "oak turns russet in autumn");
+        assert_eq!(crown(0.4, 2), crown(0.68, 2), "pine stays green");
+        // With no seasonal amplitude (fast speeds), nothing changes.
+        let flat = |phase: f32| build_view(&w, 300, 0.0, &View { season_phase: phase, ..View::default() }).trees[1][0].color;
+        assert_eq!(flat(0.4), flat(0.68));
+    }
+
+    #[test]
+    fn heat_makes_a_bigger_brighter_sun() {
+        let w = inert_world(31);
+        let sun = |heat: f32| build_view(&w, 10, 0.0, &View { heat, ..View::default() }).sun[0];
+        let (mild, hot) = (sun(0.0), sun(1.0));
+        assert!(hot.scale > mild.scale * 1.8, "the sun swells in the heat");
+        assert!(hot.color[0] > hot.color[2] * 2.0, "and burns gold");
+    }
+
+    #[test]
+    fn roots_show_only_in_the_roots_view_and_deepen_with_age() {
+        use crate::sim::world::{Brush, Params};
+        let mut w = inert_world(32);
+        w.set_params(Params { physiology: 1.0, ..w.params() });
+        let (q, r) = hex::offset_to_axial(32, 32);
+        let young = G.axial_to_index(q, r).unwrap();
+        let old = G.axial_to_index(q + 6, r).unwrap();
+        w.paint_species(young, Brush::Tree, Species::Oak, 195);
+        w.paint_species(old, Brush::Tree, Species::Oak, 0);
+        assert!(build_view(&w, 200, 0.0, &View::default()).roots.is_empty());
+        let f = build_view(&w, 200, 0.0, &View { roots: true, ..View::default() });
+        assert_eq!(f.roots.len(), 2);
+        let depth = |i: usize| {
+            let (qq, rr) = G.index_to_axial(i);
+            let (x, _) = hex::axial_to_world(qq, rr);
+            f.roots.iter().find(|t| t.pos[0] == x as f32).unwrap().scale
+        };
+        assert!(depth(old) > depth(young) + 0.3);
+    }
+
+    #[test]
+    fn edge_trees_lean_out_toward_the_open() {
+        use crate::sim::world::Brush;
+        let mut w = inert_world(33);
+        let (q, r) = hex::offset_to_axial(32, 32);
+        // A row of trees: the east end has neighbors only to its west.
+        for dq in 0..4 {
+            w.paint_species(G.axial_to_index(q + dq, r).unwrap(), Brush::Tree, Species::Oak, 0);
+        }
+        let f = build_view(&w, 300, 0.0, &View::default());
+        let east = f.trees[1].iter().max_by(|a, b| a.pos[0].total_cmp(&b.pos[0])).unwrap();
+        assert!(east.lean[0] > 0.02, "the east end leans east, lean {:?}", east.lean);
+    }
+
+    #[test]
+    fn beetle_killed_husks_turn_rust_red() {
+        use crate::sim::world::DeathCause;
+        assert_eq!(snag_color(DeathCause::Pests), RED_ATTACK);
+        assert!(RED_ATTACK[0] > 2.0 * RED_ATTACK[2]);
+        assert_ne!(snag_color(DeathCause::Drought), snag_color(DeathCause::Age));
+    }
+
+    #[test]
+    fn a_changing_cloud_cross_fades_between_its_forms() {
+        use crate::sim::world::{CloudKind, Params};
+        let mut w = inert_world(34);
+        w.set_params(Params { cloud_dynamics: 1.0, ..w.params() });
+        let (x, y) = G.center(G.middle());
+        w.spawn_cloud(CloudKind::Cumulus, [x, y], 5.0, 0);
+        let settled = build_view(&w, 50, 0.0, &View::default());
+        assert_eq!(settled.clouds[CloudKind::Cumulus as usize].len(), 1);
+        assert!(settled.clouds[CloudKind::Cumulonimbus as usize].is_empty());
+        // Mid-way through towering: both forms, the new one growing in.
+        w.debug_set_cloud(0, |c| {
+            c.from = CloudKind::Cumulus;
+            c.kind = CloudKind::Cumulonimbus;
+            c.morph = 0.4;
+            c.water = 0.8;
+        });
+        let f = build_view(&w, 50, 0.0, &View::default());
+        let (old, new) = (f.clouds[CloudKind::Cumulus as usize][0], f.clouds[CloudKind::Cumulonimbus as usize][0]);
+        assert!(new.slim < CloudKind::Cumulonimbus.traits().optical_depth && old.slim < CloudKind::Cumulus.traits().optical_depth);
+        assert!(new.pos[2] > settled.clouds[0][0].pos[2], "rising toward the thunderhead's altitude");
+        // Drying out, it thins toward invisibility before it's gone.
+        w.debug_set_cloud(0, |c| {
+            c.from = c.kind;
+            c.morph = 1.0;
+            c.water = 0.03;
+        });
+        let dry = build_view(&w, 50, 0.0, &View::default());
+        assert!(dry.clouds[CloudKind::Cumulonimbus as usize][0].slim < 0.3 * CloudKind::Cumulonimbus.traits().optical_depth);
     }
 
 }

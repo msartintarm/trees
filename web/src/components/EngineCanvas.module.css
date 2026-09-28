@@ -160,3 +160,55 @@
   font: 14px/1.6 ui-monospace, monospace;
   white-space: pre-wrap;
 }
+
+.deaths {
+  color: #f2c9a8;
+  margin-top: 2px;
+}
+
+.deaths:empty {
+  display: none;
+}
+
+.inspect {
+  position: absolute;
+  right: 12px;
+  top: 12px;
+  max-width: min(380px, calc(100% - 24px));
+  background: rgba(16, 22, 28, 0.9);
+  color: #e8eef2;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  padding: 10px 28px 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+}
+
+.inspectTitle {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.close {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: transparent;
+  color: #e8eef2;
+  border: none;
+  cursor: pointer;
+}
+
+.weather {
+  color: #cfe3f2;
+  margin-top: 2px;
+}
+
+.ticker {
+  color: #ffe9a8;
+  margin-top: 2px;
+}
+
+.weather:empty,
+.ticker:empty {
+  display: none;
+}

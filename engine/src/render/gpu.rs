@@ -7,8 +7,11 @@ use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use crate::sim::hex::Grid;
-use super::geometry::{base_mesh, bolt_mesh, cloud_mesh, grass_mesh_for, mushroom_mesh, sheet_mesh, tile_mesh, tree_mesh_for, MeshData, MeshVertex};
-use super::scene::Instance;
+use super::geometry::{
+    base_mesh, bolt_mesh, cirrus_mesh, cumulonimbus_mesh, cumulus_mesh, grass_mesh_for, mushroom_mesh,
+    nimbostratus_mesh, root_mesh, sun_mesh, tile_mesh, tile_top_mesh, tree_mesh_for, MeshData, MeshVertex,
+};
+use super::scene::{stream, Instance, STREAM_COUNT};
 
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
@@ -84,6 +87,8 @@ pub struct Renderer {
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
     cloud_pipeline: wgpu::RenderPipeline,
+    /// Translucent ground for the roots view.
+    xray_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -91,21 +96,13 @@ pub struct Renderer {
     depth: wgpu::TextureView,
     shadow: wgpu::TextureView,
     base: Mesh,
-    tile: Mesh,
-    trees: [Mesh; 4],
-    grass: [Mesh; 4],
-    mushroom: Mesh,
-    cloud: Mesh,
-    sheet: Mesh,
-    bolt: Mesh,
     base_instances: InstanceBuffer,
-    ground_instances: InstanceBuffer,
-    tree_instances: [InstanceBuffer; 4],
-    grass_instances: [InstanceBuffer; 4],
-    mushroom_instances: InstanceBuffer,
-    cloud_instances: InstanceBuffer,
-    sheet_instances: InstanceBuffer,
-    bolt_instances: InstanceBuffer,
+    /// Hex tops only (the roots view draws the ground as a thin glass
+    /// sheet, not deep columns).
+    tile_top: Mesh,
+    /// One mesh and one instance buffer per stream (`scene::stream`).
+    meshes: Vec<Mesh>,
+    buffers: Vec<InstanceBuffer>,
     backend: &'static str,
 }
 
@@ -143,48 +140,39 @@ impl Renderer {
         self.depth = make_depth(&self.device, width, height);
     }
 
+    fn draw<'a>(&'a self, pass: &mut wgpu::RenderPass<'a>, mesh: &'a Mesh, inst: &'a InstanceBuffer, n: u32) {
+        if n == 0 {
+            return;
+        }
+        pass.set_vertex_buffer(0, mesh.vertices.slice(..));
+        pass.set_vertex_buffer(1, inst.buf.slice(..));
+        pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
+        pass.draw_indexed(0..mesh.index_count, 0, 0..n);
+    }
+
     /// Re-fit the soil slab under a world of a new size (after a reseed
     /// that changed the map dimensions).
     pub fn set_grid(&mut self, width: u32, height: u32) {
         self.base = Mesh::upload(&self.device, &self.queue, &base_mesh(Grid::new(width, height)), "base-mesh");
     }
 
-    /// Draw one frame. Instance buffers arrive as raw bytes (bytemuck-cast
-    /// `Instance` arrays copied out of the sim) with their instance counts.
+    /// Draw one frame. All instance streams arrive packed in one byte
+    /// buffer (`scene::FrameInstances::pack`, in `scene::stream` order)
+    /// with a per-stream instance count. `heat` (0..1) warms and
+    /// brightens the sunlight and hazes the sky; `roots_view` turns the
+    /// ground to glass and draws the root systems beneath it.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
         view_proj: Vec<f32>,
         alpha: f32,
         light: f32,
+        heat: f32,
         eye: Vec<f32>,
         light_vp: Vec<f32>,
-        ground: Vec<u8>,
-        ground_n: u32,
-        acacia: Vec<u8>,
-        acacia_n: u32,
-        oak: Vec<u8>,
-        oak_n: u32,
-        pine: Vec<u8>,
-        pine_n: u32,
-        willow: Vec<u8>,
-        willow_n: u32,
-        bunch: Vec<u8>,
-        bunch_n: u32,
-        sod: Vec<u8>,
-        sod_n: u32,
-        sedge: Vec<u8>,
-        sedge_n: u32,
-        annual: Vec<u8>,
-        annual_n: u32,
-        mushrooms: Vec<u8>,
-        mushrooms_n: u32,
-        clouds: Vec<u8>,
-        clouds_n: u32,
-        sheets: Vec<u8>,
-        sheets_n: u32,
-        bolts: Vec<u8>,
-        bolts_n: u32,
+        bytes: Vec<u8>,
+        counts: Vec<u32>,
+        roots_view: bool,
     ) {
         let mut globals = [0f32; 44];
         globals[..16].copy_from_slice(&view_proj[..16]);
@@ -192,20 +180,20 @@ impl Renderer {
         globals[32..35].copy_from_slice(&SUN);
         globals[36] = alpha;
         globals[37] = light;
+        globals[38] = heat;
         globals[40..43].copy_from_slice(&eye[..3]);
         self.queue.write_buffer(&self.globals, 0, bytemuck::cast_slice(&globals));
 
-        self.ground_instances.write(&self.device, &self.queue, &ground, "ground-instances");
-        for (buf, bytes) in self.tree_instances.iter_mut().zip([&acacia, &oak, &pine, &willow]) {
-            buf.write(&self.device, &self.queue, bytes, "tree-instances");
+        let stride = std::mem::size_of::<Instance>();
+        let mut offset = 0usize;
+        let mut n = [0u32; STREAM_COUNT];
+        for k in 0..STREAM_COUNT {
+            n[k] = counts.get(k).copied().unwrap_or(0);
+            let len = n[k] as usize * stride;
+            let end = (offset + len).min(bytes.len());
+            self.buffers[k].write(&self.device, &self.queue, &bytes[offset..end], "instances");
+            offset = end;
         }
-        for (buf, bytes) in self.grass_instances.iter_mut().zip([&bunch, &sod, &sedge, &annual]) {
-            buf.write(&self.device, &self.queue, bytes, "grass-instances");
-        }
-        self.mushroom_instances.write(&self.device, &self.queue, &mushrooms, "mushroom-instances");
-        self.cloud_instances.write(&self.device, &self.queue, &clouds, "cloud-instances");
-        self.sheet_instances.write(&self.device, &self.queue, &sheets, "sheet-instances");
-        self.bolt_instances.write(&self.device, &self.queue, &bolts, "bolt-instances");
 
         let frame = match self.surface.get_current_texture() {
             Ok(f) => f,
@@ -240,27 +228,26 @@ impl Renderer {
             });
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
-            for (mesh, inst, n) in [
-                (&self.tile, &self.ground_instances, ground_n),
-                (&self.trees[0], &self.tree_instances[0], acacia_n),
-                (&self.trees[1], &self.tree_instances[1], oak_n),
-                (&self.trees[2], &self.tree_instances[2], pine_n),
-                (&self.trees[3], &self.tree_instances[3], willow_n),
-                (&self.grass[0], &self.grass_instances[0], bunch_n),
-                (&self.grass[1], &self.grass_instances[1], sod_n),
-                (&self.grass[2], &self.grass_instances[2], sedge_n),
-                (&self.grass[3], &self.grass_instances[3], annual_n),
-                (&self.mushroom, &self.mushroom_instances, mushrooms_n),
-            ] {
-                if n == 0 {
+            let mut casters = vec![stream::GROUND];
+            casters.extend(stream::TREES);
+            casters.extend(stream::GRASS);
+            casters.push(stream::MUSHROOMS);
+            for k in casters {
+                if k == stream::GROUND && roots_view {
                     continue;
                 }
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_vertex_buffer(1, inst.buf.slice(..));
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..n);
+                self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
             }
         }
+        // Heat hazes and pales the sky; a cold spell deepens its blue.
+        let h = heat.clamp(0.0, 1.0) as f64;
+        let haze = |c: f64, warm: f64| c + (warm - c) * 0.45 * h;
+        let sky = wgpu::Color {
+            r: haze(SKY.r, 0.72) * (0.5 + 0.5 * light as f64),
+            g: haze(SKY.g, 0.70) * (0.5 + 0.5 * light as f64),
+            b: haze(SKY.b, 0.62) * (0.55 + 0.45 * light as f64),
+            a: 1.0,
+        };
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: Some("scene"),
@@ -268,16 +255,7 @@ impl Renderer {
                     view: &view,
                     depth_slice: None,
                     resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            // The sky dims and brightens with the season.
-                            r: SKY.r * (0.5 + 0.5 * light as f64),
-                            g: SKY.g * (0.5 + 0.5 * light as f64),
-                            b: SKY.b * (0.55 + 0.45 * light as f64),
-                            a: 1.0,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Clear(sky), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
                     view: &self.depth,
@@ -293,42 +271,28 @@ impl Renderer {
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.bind_group, &[]);
             pass.set_bind_group(1, &self.shadow_bind_group, &[]);
-            for (mesh, inst, n) in [
-                (&self.base, &self.base_instances, 1),
-                (&self.tile, &self.ground_instances, ground_n),
-                (&self.trees[0], &self.tree_instances[0], acacia_n),
-                (&self.trees[1], &self.tree_instances[1], oak_n),
-                (&self.trees[2], &self.tree_instances[2], pine_n),
-                (&self.trees[3], &self.tree_instances[3], willow_n),
-                (&self.grass[0], &self.grass_instances[0], bunch_n),
-                (&self.grass[1], &self.grass_instances[1], sod_n),
-                (&self.grass[2], &self.grass_instances[2], sedge_n),
-                (&self.grass[3], &self.grass_instances[3], annual_n),
-                (&self.mushroom, &self.mushroom_instances, mushrooms_n),
-                (&self.bolt, &self.bolt_instances, bolts_n),
-            ] {
-                if n == 0 {
-                    continue;
-                }
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_vertex_buffer(1, inst.buf.slice(..));
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..n);
+            if !roots_view {
+                self.draw(&mut pass, &self.base, &self.base_instances, 1);
+                self.draw(&mut pass, &self.meshes[stream::GROUND], &self.buffers[stream::GROUND], n[stream::GROUND]);
             }
-            // Translucent clouds last, back to front as seen from above:
-            // the low puffy decks, then the high sheets over them.
+            let mut opaque: Vec<usize> = stream::TREES.to_vec();
+            opaque.extend(stream::GRASS);
+            opaque.extend([stream::MUSHROOMS, stream::BOLTS, stream::SUN]);
+            if roots_view {
+                opaque.push(stream::ROOTS);
+            }
+            for k in opaque {
+                self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
+            }
+            if roots_view {
+                // The ground as glass over the roots.
+                pass.set_pipeline(&self.xray_pipeline);
+                self.draw(&mut pass, &self.tile_top, &self.buffers[stream::GROUND], n[stream::GROUND]);
+            }
+            // Translucent clouds last, low decks first (as seen from above).
             pass.set_pipeline(&self.cloud_pipeline);
-            for (mesh, inst, n) in [
-                (&self.cloud, &self.cloud_instances, clouds_n),
-                (&self.sheet, &self.sheet_instances, sheets_n),
-            ] {
-                if n == 0 {
-                    continue;
-                }
-                pass.set_vertex_buffer(0, mesh.vertices.slice(..));
-                pass.set_vertex_buffer(1, inst.buf.slice(..));
-                pass.set_index_buffer(mesh.indices.slice(..), wgpu::IndexFormat::Uint32);
-                pass.draw_indexed(0..mesh.index_count, 0, 0..n);
+            for k in stream::CLOUDS {
+                self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
             }
         }
         self.queue.submit([encoder.finish()]);
@@ -513,9 +477,9 @@ async fn from_surface(
         attributes: &wgpu::vertex_attr_array![0 => Float32x3, 1 => Float32x3, 2 => Float32x3, 3 => Float32],
     };
     let instance_layout = wgpu::VertexBufferLayout {
-        array_stride: 36,
+        array_stride: std::mem::size_of::<Instance>() as u64,
         step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32, 6 => Float32, 7 => Float32x3, 8 => Float32],
+        attributes: &wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32, 6 => Float32, 7 => Float32x3, 8 => Float32, 9 => Float32x2],
     };
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -576,6 +540,51 @@ async fn from_surface(
                 write_mask: wgpu::ColorWrites::ALL,
             })],
         }),
+        // Clouds are closed volumes wound counter-clockwise from outside
+        // (checked by geometry::tests): draw only their outer skin, so a
+        // translucent heap reads as a solid mass rather than a stack of
+        // see-through rings.
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            front_face: wgpu::FrontFace::Ccw,
+            cull_mode: Some(wgpu::Face::Back),
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            // Clouds write depth (with near-transparent fringes discarded in
+            // the shader) so a cloud's own opaque core hides what hangs
+            // behind or beneath it.
+            depth_write_enabled: true,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+
+    // The roots view's glass ground: same blending as the clouds.
+    let xray_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("xray"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            compilation_options: Default::default(),
+            buffers: &[vertex_layout.clone(), instance_layout.clone()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_xray"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
         primitive: wgpu::PrimitiveState {
             topology: wgpu::PrimitiveTopology::TriangleList,
             cull_mode: None,
@@ -622,50 +631,22 @@ async fn from_surface(
 
     let depth = make_depth(&device, width, height);
     let base = Mesh::upload(&device, &queue, &base_mesh(Grid::DEFAULT), "base-mesh");
-    let tile = Mesh::upload(&device, &queue, &tile_mesh(), "tile-mesh");
-    let trees = [
-        Mesh::upload(&device, &queue, &tree_mesh_for(0), "acacia-mesh"),
-        Mesh::upload(&device, &queue, &tree_mesh_for(1), "oak-mesh"),
-        Mesh::upload(&device, &queue, &tree_mesh_for(2), "pine-mesh"),
-        Mesh::upload(&device, &queue, &tree_mesh_for(3), "willow-mesh"),
-    ];
-    let grass = [
-        Mesh::upload(&device, &queue, &grass_mesh_for(0), "bunch-mesh"),
-        Mesh::upload(&device, &queue, &grass_mesh_for(1), "sod-mesh"),
-        Mesh::upload(&device, &queue, &grass_mesh_for(2), "sedge-mesh"),
-        Mesh::upload(&device, &queue, &grass_mesh_for(3), "annual-mesh"),
-    ];
-    let mushroom = Mesh::upload(&device, &queue, &mushroom_mesh(), "mushroom-mesh");
-    let cloud = Mesh::upload(&device, &queue, &cloud_mesh(), "cloud-mesh");
-    let sheet = Mesh::upload(&device, &queue, &sheet_mesh(), "sheet-mesh");
-    let bolt = Mesh::upload(&device, &queue, &bolt_mesh(), "bolt-mesh");
+    let tile_top = Mesh::upload(&device, &queue, &tile_top_mesh(), "tile-top-mesh");
+    // One mesh per stream, in `scene::stream` order.
+    let mut stream_meshes: Vec<MeshData> = vec![tile_mesh()];
+    stream_meshes.extend((0..4).map(tree_mesh_for));
+    stream_meshes.extend((0..4).map(grass_mesh_for));
+    stream_meshes.push(mushroom_mesh());
+    stream_meshes.extend([cumulus_mesh(), cumulonimbus_mesh(), nimbostratus_mesh(), cirrus_mesh()]);
+    stream_meshes.extend([bolt_mesh(), root_mesh(), sun_mesh()]);
+    assert_eq!(stream_meshes.len(), STREAM_COUNT);
+    let meshes: Vec<Mesh> = stream_meshes.iter().map(|m| Mesh::upload(&device, &queue, m, "stream-mesh")).collect();
+    let buffers: Vec<InstanceBuffer> =
+        (0..STREAM_COUNT).map(|_| InstanceBuffer::new(&device, 1024 * 44, "instances")).collect();
     // The base slab never changes: one identity instance uploaded once.
-    let mut base_instances = InstanceBuffer::new(&device, 32, "base-instance");
-    let slab = [Instance {
-        pos: [0.0; 3],
-        scale: 1.0,
-        prev_scale: 1.0,
-        color: [1.0; 3],
-        slim: 0.0,
-    }];
+    let mut base_instances = InstanceBuffer::new(&device, 64, "base-instance");
+    let slab = [Instance { scale: 1.0, prev_scale: 1.0, color: [1.0; 3], ..Default::default() }];
     base_instances.write(&device, &queue, bytemuck::cast_slice(&slab), "base-instance");
-    let ground_instances = InstanceBuffer::new(&device, 4096 * 32, "ground-instances");
-    let tree_instances = [
-        InstanceBuffer::new(&device, 512 * 32, "tree-instances"),
-        InstanceBuffer::new(&device, 512 * 32, "tree-instances"),
-        InstanceBuffer::new(&device, 512 * 32, "tree-instances"),
-        InstanceBuffer::new(&device, 512 * 32, "tree-instances"),
-    ];
-    let grass_instances = [
-        InstanceBuffer::new(&device, 1024 * 36, "grass-instances"),
-        InstanceBuffer::new(&device, 1024 * 36, "grass-instances"),
-        InstanceBuffer::new(&device, 1024 * 36, "grass-instances"),
-        InstanceBuffer::new(&device, 1024 * 36, "grass-instances"),
-    ];
-    let mushroom_instances = InstanceBuffer::new(&device, 512 * 32, "mushroom-instances");
-    let cloud_instances = InstanceBuffer::new(&device, 16 * 32, "cloud-instances");
-    let sheet_instances = InstanceBuffer::new(&device, 16 * 32, "sheet-instances");
-    let bolt_instances = InstanceBuffer::new(&device, 64 * 32, "bolt-instances");
 
     Ok(Renderer {
         surface,
@@ -674,6 +655,7 @@ async fn from_surface(
         config,
         pipeline,
         cloud_pipeline,
+        xray_pipeline,
         shadow_pipeline,
         globals,
         bind_group,
@@ -681,21 +663,10 @@ async fn from_surface(
         depth,
         shadow,
         base,
-        tile,
-        trees,
-        grass,
-        mushroom,
-        cloud,
-        sheet,
-        bolt,
         base_instances,
-        ground_instances,
-        tree_instances,
-        grass_instances,
-        mushroom_instances,
-        cloud_instances,
-        sheet_instances,
-        bolt_instances,
+        tile_top,
+        meshes,
+        buffers,
         backend,
     })
 }

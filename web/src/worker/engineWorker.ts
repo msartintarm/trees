@@ -25,6 +25,7 @@ ctx.onmessage = async (e: MessageEvent) => {
         onReady: (r) => post({ type: "ready", ...r }),
         onFrame: (f) => post({ type: "frame", ...f }),
         onFatal: (message) => post({ type: "fatal", message }),
+        onInspect: (text) => post({ type: "inspect", text }),
       });
       for (const c of pending.splice(0)) session.applyControl(c);
     } catch (err) {

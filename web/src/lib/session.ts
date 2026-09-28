@@ -46,6 +46,9 @@ function workerSession(canvas: HTMLCanvasElement, config: InitConfig, cb: Sessio
       case "fatal":
         cb.onFatal(m.message);
         break;
+      case "inspect":
+        cb.onInspect(m.text);
+        break;
     }
   };
   worker.onerror = (e) => cb.onFatal(e.message || "engine worker error");

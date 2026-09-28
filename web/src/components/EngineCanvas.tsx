@@ -17,7 +17,7 @@ import {
   wheelZoomFactor,
   MAX_DPR,
 } from "../lib/camera.ts";
-import { statsText } from "../lib/hud.ts";
+import { cloudsText, deathsText, newestCloudEvent, statsText } from "../lib/hud.ts";
 import {
   GRASS_NAMES,
   SPECIES_NAMES,
@@ -40,7 +40,12 @@ import {
 } from "../lib/simParams.ts";
 import styles from "./EngineCanvas.module.css";
 
-const SPEEDS = [0.5, 1, 2, 8, 32];
+// 0.05× shows the seasons (a year every two seconds); faster speeds show
+// the annual picture.
+const SPEEDS = [0.05, 0.5, 1, 2, 8, 32];
+
+/** A click either paints with a brush or inspects the tile. */
+type Tool = Brush | "inspect";
 const DEFAULT_SEED = 7;
 
 export default function EngineCanvas() {
@@ -48,13 +53,18 @@ export default function EngineCanvas() {
   const sessionRef = useRef<Session | null>(null);
   const bootedRef = useRef(false);
   const hudRef = useRef<HTMLDivElement | null>(null);
+  const deathsRef = useRef<HTMLDivElement | null>(null);
+  const weatherRef = useRef<HTMLDivElement | null>(null);
+  const tickerRef = useRef<HTMLDivElement | null>(null);
+  const [inspectText, setInspectText] = useState<string | null>(null);
+  const [rootsView, setRootsView] = useState(false);
   const snapshotRef = useRef<StatsSnapshot | null>(null);
 
   const [error, setError] = useState<string | null>(null);
   const [backend, setBackend] = useState<string>("");
   const [playing, setPlaying] = useState(true);
   const [speed, setSpeed] = useState(1);
-  const [brush, setBrush] = useState<Brush>("tree");
+  const [brush, setBrush] = useState<Tool>("tree");
   const [treeSpecies, setTreeSpecies] = useState<TreeSpecies>(0);
   const [seed, setSeed] = useState(DEFAULT_SEED);
   const [params, setParams] = useState<SimParams>(DEFAULT_PARAMS);
@@ -63,7 +73,7 @@ export default function EngineCanvas() {
   const [paramText, setParamText] = useState<Record<string, string>>(() =>
     Object.fromEntries(PARAM_FIELDS.map((f) => [f.key, String(displayValue(f, DEFAULT_PARAMS))])),
   );
-  const brushRef = useRef<Brush>(brush);
+  const brushRef = useRef<Tool>(brush);
   brushRef.current = brush;
   const speciesRef = useRef<TreeSpecies>(treeSpecies);
   speciesRef.current = treeSpecies;
@@ -79,6 +89,8 @@ export default function EngineCanvas() {
     bootedRef.current = true;
 
     const initial = backingSize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio);
+    let lastEvents: number[] | null = null;
+    let tickerShownAt = 0;
     const session = createSession(
       canvas,
       { basePath: basePath(), width: initial.w, height: initial.h, seed: DEFAULT_SEED },
@@ -87,9 +99,21 @@ export default function EngineCanvas() {
         onFrame: (f) => {
           snapshotRef.current = f.snapshot;
           if (hudRef.current) hudRef.current.textContent = statsText(f.snapshot);
+          if (deathsRef.current) deathsRef.current.textContent = deathsText(f.snapshot);
+          if (weatherRef.current) weatherRef.current.textContent = cloudsText(f.snapshot);
+          // Weather ticker: announce each cloud transition for a few seconds.
+          const event = newestCloudEvent(lastEvents, f.snapshot.cloudEvents);
+          lastEvents = f.snapshot.cloudEvents;
+          if (event && tickerRef.current) {
+            tickerRef.current.textContent = event;
+            tickerShownAt = performance.now();
+          } else if (tickerRef.current && performance.now() - tickerShownAt > 4000) {
+            tickerRef.current.textContent = "";
+          }
           setPlaying((p) => (p === f.snapshot.playing ? p : f.snapshot.playing));
         },
         onFatal: (message) => setError(message),
+        onInspect: (text) => setInspectText(text || null),
       },
     );
     sessionRef.current = session;
@@ -161,11 +185,16 @@ export default function EngineCanvas() {
       if (!wasClick) return;
       const rect = canvas.getBoundingClientRect();
       const { bx, by } = clientToBacking(e.clientX, e.clientY, rect, lastSize);
+      const tool = brushRef.current;
+      if (tool === "inspect") {
+        session.applyControl({ type: "inspect", bx, by });
+        return;
+      }
       session.applyControl({
         type: "paint",
         bx,
         by,
-        brush: brushRef.current,
+        brush: tool,
         species: speciesRef.current,
         grass: grassRef.current,
       });
@@ -248,18 +277,36 @@ export default function EngineCanvas() {
         <div className={styles.row}>
           <span className={styles.label}>Speed</span>
           {SPEEDS.map((v) => (
-            <button key={v} className={v === speed ? styles.active : ""} onClick={() => pickSpeed(v)}>
-              {v}×
+            <button
+              key={v}
+              className={v === speed ? styles.active : ""}
+              title={v < 0.1 ? "slow enough to see the seasons" : undefined}
+              onClick={() => pickSpeed(v)}
+            >
+              {v < 0.1 ? "🍂" : `${v}×`}
             </button>
           ))}
         </div>
         <div className={styles.row}>
           <span className={styles.label}>Brush</span>
-          {(["fire", "clear"] as Brush[]).map((b) => (
+          {(["fire", "clear", "inspect"] as Tool[]).map((b) => (
             <button key={b} className={b === brush ? styles.active : ""} onClick={() => setBrush(b)}>
-              {b === "fire" ? "🔥 Fire" : "✕ Clear"}
+              {b === "fire" ? "🔥 Fire" : b === "clear" ? "✕ Clear" : "🔍 Inspect"}
             </button>
           ))}
+        </div>
+        <div className={styles.row}>
+          <span className={styles.label}>View</span>
+          <button
+            className={rootsView ? styles.active : ""}
+            title="show root systems under glass ground; blue = reaching groundwater"
+            onClick={() => {
+              send({ type: "rootsView", on: !rootsView });
+              setRootsView(!rootsView);
+            }}
+          >
+            🌱 Roots
+          </button>
         </div>
         <div className={styles.row}>
           <span className={styles.label}>Grass</span>
@@ -350,9 +397,24 @@ export default function EngineCanvas() {
           drag: orbit · shift/right-drag: pan · wheel: zoom
         </div>
       </div>
-      <div ref={hudRef} className={styles.hud}>
-        loading…
+      <div className={styles.hud}>
+        <div ref={hudRef}>loading…</div>
+        <div ref={weatherRef} className={styles.weather} />
+        <div ref={tickerRef} className={styles.ticker} />
+        <div ref={deathsRef} className={styles.deaths} />
       </div>
+      {inspectText && (
+        <div className={styles.inspect}>
+          <button className={styles.close} onClick={() => setInspectText(null)} aria-label="close">
+            ✕
+          </button>
+          {inspectText.split("\n").map((line, k) => (
+            <div key={k} className={k === 0 ? styles.inspectTitle : undefined}>
+              {line}
+            </div>
+          ))}
+        </div>
+      )}
       {error && <div className={styles.error}>engine failed to start:{"\n"}{error}</div>}
     </div>
   );

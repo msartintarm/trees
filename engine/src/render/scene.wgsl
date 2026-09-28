@@ -16,7 +16,8 @@ struct Globals {
     alpha: f32,
     // Global illumination level from the climate's sun signal (1 = neutral).
     light: f32,
-    _pad1: f32,
+    // Heat, 0..1: warmer, brighter, more glaring sunlight when hot.
+    heat: f32,
     _pad2: f32,
     // Camera position, for specular and fresnel rim.
     eye: vec4<f32>,
@@ -37,6 +38,9 @@ struct VsIn {
     @location(7) icolor: vec3<f32>,
     // Canopy-race form: 0 broad … 1 tall and thin (trees only).
     @location(8) slim: f32,
+    // Trees: lean toward open light (a shear, world units per unit of
+    // height). Clouds: the wind direction (unit vector) to orient along.
+    @location(9) lean: vec2<f32>,
 };
 
 fn world_with_form(in: VsIn, slim: f32) -> vec3<f32> {
@@ -45,7 +49,25 @@ fn world_with_form(in: VsIn, slim: f32) -> vec3<f32> {
     // Shade-avoidance form: crowded youth = taller, narrower.
     let h = 1.0 + 0.45 * slim;
     let w = 1.0 - 0.35 * slim;
-    return vec3<f32>(in.pos.x * sxy * w, in.pos.y * sxy * w, in.pos.z * s * h) + in.ipos;
+    let z = in.pos.z * s * h;
+    // Phototropic lean: the crown leans out over open ground, more the
+    // higher up the stem.
+    return vec3<f32>(in.pos.x * sxy * w + in.lean.x * z, in.pos.y * sxy * w + in.lean.y * z, z) + in.ipos;
+}
+
+// Clouds: no growth form; the mesh turns to face along the wind (anvils
+// stream downwind, cirrus streaks lie along the jet).
+fn cloud_world(in: VsIn) -> vec3<f32> {
+    let s = mix(in.prev_scale, in.scale, globals.alpha);
+    var d = in.lean;
+    if (length(d) < 1e-3) {
+        d = vec2<f32>(1.0, 0.0);
+    } else {
+        d = normalize(d);
+    }
+    let x = in.pos.x * d.x - in.pos.y * d.y;
+    let y = in.pos.x * d.y + in.pos.y * d.x;
+    return vec3<f32>(x * s, y * s, in.pos.z * s) + in.ipos;
 }
 
 fn world_of(in: VsIn) -> vec3<f32> {
@@ -86,11 +108,17 @@ fn vs_main(in: VsIn) -> VsOut {
 // growth form, so geometry is built with no form distortion.
 @vertex
 fn vs_cloud(in: VsIn) -> VsOut {
-    let world = world_with_form(in, 0.0);
+    let world = cloud_world(in);
     var out: VsOut;
     out.clip = globals.view_proj * vec4<f32>(world, 1.0);
     out.color = mix(in.icolor, in.vcolor, in.vweight);
-    out.normal = in.normal;
+    var d = in.lean;
+    if (length(d) < 1e-3) {
+        d = vec2<f32>(1.0, 0.0);
+    } else {
+        d = normalize(d);
+    }
+    out.normal = vec3<f32>(in.normal.x * d.x - in.normal.y * d.y, in.normal.x * d.y + in.normal.y * d.x, in.normal.z);
     out.world = world;
     out.mat_w = in.vweight;
     let sp = globals.light_vp * vec4<f32>(world, 1.0);
@@ -165,15 +193,19 @@ fn lit_color(in: VsOut) -> vec3<f32> {
 
     // Hemisphere ambient: cool sky from above, warm soil bounce from below.
     let hemi = mix(vec3<f32>(0.30, 0.26, 0.22), vec3<f32>(0.42, 0.44, 0.48), n.z * 0.5 + 0.5);
-    let sun = max(dot(n, globals.sun_dir.xyz), 0.0) * 0.72 * lit;
-    let shade = (hemi + vec3<f32>(1.0, 0.98, 0.92) * sun) * globals.light;
+    // Heat: a stronger, warmer, more glaring sun (hot years read bright
+    // and golden, cool ones pale and soft).
+    let heat = clamp(globals.heat, 0.0, 1.0);
+    let sun_color = mix(vec3<f32>(0.92, 0.96, 1.0), vec3<f32>(1.0, 0.84, 0.58), heat);
+    let sun = max(dot(n, globals.sun_dir.xyz), 0.0) * mix(0.58, 0.98, heat) * lit;
+    let shade = (hemi + sun_color * sun) * globals.light;
 
     // View-dependent terms: a broad Blinn-Phong sheen and a fresnel rim.
     // The rim is what sells curvature — cone and trunk silhouettes catch a
     // sliver of sky light exactly where a smooth surface would.
     let v = normalize(globals.eye.xyz - in.world);
     let h = normalize(v + globals.sun_dir.xyz);
-    let spec = pow(max(dot(n, h), 0.0), 26.0) * 0.16 * lit * globals.light;
+    let spec = pow(max(dot(n, h), 0.0), 26.0) * (0.12 + 0.22 * heat) * lit * globals.light;
     let fres = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
     let rim = fres * 0.20 * globals.light;
     return in.color * shade
@@ -184,6 +216,12 @@ fn lit_color(in: VsOut) -> vec3<f32> {
 @fragment
 fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(lit_color(in), 1.0);
+}
+
+// The roots view: the ground as tinted glass over the root systems.
+@fragment
+fn fs_xray(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(lit_color(in), 0.32);
 }
 
 // Cloud mesh radius at scale 1 (both the puffy and the sheet mesh).
@@ -202,5 +240,10 @@ fn fs_cloud(in: VsOut) -> @location(0) vec4<f32> {
     let streak = mix(1.0, 0.25 + 1.5 * fibers, thin);
     let tau = in.tau * core * streak;
     let alpha = 1.0 - exp(-tau);
+    // Drop near-invisible fringes so they don't write depth and cut holes
+    // in the clouds behind them.
+    if (alpha < 0.04) {
+        discard;
+    }
     return vec4<f32>(lit_color(in), alpha);
 }

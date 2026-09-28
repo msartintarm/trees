@@ -112,6 +112,13 @@ const TILE_HEIGHT: f32 =
 /// Slight inset leaves visible seams between tiles.
 const TILE_INSET: f32 = 0.96;
 
+/// Just the hex top face (the roots view's glass ground).
+pub fn tile_top_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    hex_prism(&mut m, SIZE as f32 * TILE_INSET, -0.02, 0.0, [1.0; 3], 0.0);
+    m
+}
+
 pub fn tile_mesh() -> MeshData {
     let mut m = MeshData::new();
     hex_prism(&mut m, SIZE as f32 * TILE_INSET, -TILE_HEIGHT, 0.0, [1.0; 3], 0.0);
@@ -217,40 +224,136 @@ pub fn base_mesh(grid: crate::sim::hex::Grid) -> MeshData {
     m
 }
 
-const CLOUD_GREY: [f32; 3] = [1.0, 1.0, 1.0]; // instance-colored
 const BOLT_GLOW: [f32; 3] = [2.1, 2.1, 1.6]; // over-bright: stays white under any shading
 
-/// A thundercloud: overlapping squashed hex puffs, ~8 world units across at
-/// scale 1. Altitude comes from the instance position.
-pub fn cloud_mesh() -> MeshData {
+/// Ellipsoid (or its upper part, from latitude `lat_min`) centered at `c`
+/// with radii `r`, colored by height from `low` (its base) to `high` (its
+/// top) — how sunlit cloud tops and shadowed bases read.
+#[allow(clippy::too_many_arguments)]
+fn ellipsoid(mesh: &mut MeshData, c: [f32; 3], r: [f32; 3], lat_min: f32, low: [f32; 3], high: [f32; 3], weight: f32) {
+    let (bands, sides) = (6usize, 12usize);
+    let lat = |b: usize| lat_min + (std::f32::consts::FRAC_PI_2 - lat_min) * b as f32 / bands as f32;
+    let mut ring = |phi: f32| -> Vec<u32> {
+        (0..sides)
+            .map(|k| {
+                let th = std::f32::consts::TAU * k as f32 / sides as f32;
+                let (cp, sp) = (phi.cos(), phi.sin());
+                let p = [c[0] + r[0] * cp * th.cos(), c[1] + r[1] * cp * th.sin(), c[2] + r[2] * sp];
+                let n = [cp * th.cos() / r[0], cp * th.sin() / r[1], sp / r[2]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-6);
+                let t = ((sp + 1.0) / 2.0).clamp(0.0, 1.0);
+                let col = [low[0] + (high[0] - low[0]) * t, low[1] + (high[1] - low[1]) * t, low[2] + (high[2] - low[2]) * t];
+                mesh.push(p, [n[0] / len, n[1] / len, n[2] / len], col, weight)
+            })
+            .collect()
+    };
+    let rings: Vec<Vec<u32>> = (0..=bands).map(|b| ring(lat(b))).collect();
+    for b in 0..bands {
+        for k in 0..sides {
+            let k1 = (k + 1) % sides;
+            let (a0, a1, b0, b1) = (rings[b][k], rings[b][k1], rings[b + 1][k], rings[b + 1][k1]);
+            mesh.indices.extend([a0, a1, b1, a0, b1, b0]);
+        }
+    }
+    // Close the base when the ellipsoid is cut off (flat cloud bases).
+    if lat_min > -std::f32::consts::FRAC_PI_2 + 1e-3 {
+        let z = c[2] + r[2] * lat_min.sin();
+        let center = mesh.push([c[0], c[1], z], [0.0, 0.0, -1.0], low, weight);
+        let base = &rings[0];
+        for k in 0..sides {
+            // Wound like the sides: counter-clockwise seen from outside.
+            mesh.indices.extend([center, base[(k + 1) % sides], base[k]]);
+        }
+    }
+}
+
+/// Cloud palettes (baked, weight ≈ 1): sunlit tops, shadowed bases.
+const CU_TOP: [f32; 3] = [1.0, 1.0, 1.0];
+const CU_BASE: [f32; 3] = [0.66, 0.68, 0.73];
+const CB_BASE: [f32; 3] = [0.26, 0.27, 0.33];
+const CB_MID: [f32; 3] = [0.56, 0.57, 0.63];
+const CB_ANVIL: [f32; 3] = [0.93, 0.93, 0.97];
+const NS_TOP: [f32; 3] = [0.56, 0.57, 0.61];
+const NS_BASE: [f32; 3] = [0.34, 0.35, 0.39];
+const CI_WISP: [f32; 3] = [0.97, 0.98, 1.0];
+const CLOUD_WEIGHT: f32 = 0.85;
+
+/// Fair-weather cumulus: a field of separate small heaps, each as tall as
+/// it is wide, flat-based at the condensation level with cauliflower
+/// domes on top (~8 units across at scale 1; heaps ~2 across).
+pub fn cumulus_mesh() -> MeshData {
     let mut m = MeshData::new();
-    for (cx, cy, rad, z0, z1) in [
-        (0.0f32, 0.0f32, 5.0f32, 0.0f32, 1.7f32),
-        (3.4, 1.6, 3.4, 0.4, 2.3),
-        (-3.7, -0.9, 3.0, 0.3, 2.0),
-        (0.6, -3.1, 2.3, 0.2, 1.5),
-    ] {
-        // Reuse the cylinder builder as a hex "puff" drum plus a cone cap.
-        cylinder(&mut m, 6, cx, cy, rad, z0, z1, CLOUD_GREY, 0.0);
-        cone(&mut m, 6, cx, cy, rad, z1, z1 + 0.8, CLOUD_GREY, 0.0);
-        // Underside so the cloud is opaque from below.
-        cone(&mut m, 6, cx, cy, rad, z0, z0 - 0.3, CLOUD_GREY, 0.0);
+    let heaps = [(0.0f32, 0.0f32, 1.25f32), (3.6, 1.4, 1.0), (-3.2, 2.2, 0.9), (1.4, -3.6, 1.1), (-2.4, -2.8, 0.8), (4.6, -2.4, 0.7)];
+    for (x, y, s) in heaps {
+        let flat = -0.35f32; // cut the lower half: flat bases
+        ellipsoid(&mut m, [x, y, 0.4 * s], [1.3 * s, 1.3 * s, 0.9 * s], flat, CU_BASE, CU_TOP, CLOUD_WEIGHT);
+        ellipsoid(&mut m, [x + 0.5 * s, y + 0.2 * s, 1.1 * s], [0.8 * s, 0.8 * s, 0.8 * s], flat, CU_BASE, CU_TOP, CLOUD_WEIGHT);
+        ellipsoid(&mut m, [x - 0.45 * s, y - 0.3 * s, 1.0 * s], [0.7 * s, 0.7 * s, 0.7 * s], flat, CU_BASE, CU_TOP, CLOUD_WEIGHT);
+        ellipsoid(&mut m, [x, y, 1.7 * s], [0.55 * s, 0.55 * s, 0.55 * s], flat, CU_BASE, CU_TOP, CLOUD_WEIGHT);
     }
     m
 }
 
-/// A flat cloud sheet (~8 units radius at scale 1): a wide thin slab with a
-/// couple of offset panels so nimbostratus reads layered and cirrus wispy.
-pub fn sheet_mesh() -> MeshData {
+/// Cumulonimbus: the thunderstorm tower — a dark, wide, flat base, a
+/// towering column bulging with updraft cells, and a flat anvil spread
+/// out downwind (+x, turned to the wind) at the top of the troposphere.
+pub fn cumulonimbus_mesh() -> MeshData {
     let mut m = MeshData::new();
-    for (cx, cy, rad, z0, z1) in [
-        (0.0f32, 0.0f32, 7.6f32, 0.0f32, 0.45f32),
-        (2.8, 1.2, 4.6, 0.35, 0.7),
-        (-3.4, -1.6, 4.0, 0.25, 0.6),
-    ] {
-        cylinder(&mut m, 6, cx, cy, rad, z0, z1, [1.0; 3], 0.0);
-        cone(&mut m, 6, cx, cy, rad, z1, z1 + 0.25, [1.0; 3], 0.0);
-        cone(&mut m, 6, cx, cy, rad, z0, z0 - 0.15, [1.0; 3], 0.0);
+    let flat = -0.3f32;
+    ellipsoid(&mut m, [0.0, 0.0, 0.6], [4.6, 4.6, 1.3], flat, CB_BASE, CB_MID, CLOUD_WEIGHT);
+    for (z, r) in [(2.4f32, 3.6f32), (4.4, 3.3), (6.4, 3.0), (8.2, 2.7)] {
+        ellipsoid(&mut m, [0.2, 0.0, z], [r, r, 1.5], -1.2, CB_MID, CB_ANVIL, CLOUD_WEIGHT);
+    }
+    // The anvil: wide, flat, blown downwind, with an overshooting top.
+    ellipsoid(&mut m, [2.2, 0.0, 10.0], [6.0, 4.4, 0.7], -1.3, CB_MID, CB_ANVIL, CLOUD_WEIGHT);
+    ellipsoid(&mut m, [0.3, 0.0, 10.6], [1.6, 1.6, 0.9], -0.5, CB_ANVIL, CB_ANVIL, CLOUD_WEIGHT);
+    m
+}
+
+/// Nimbostratus: a broad, featureless, dark rain layer — one thick slab
+/// with a soft top and ragged scud (pannus) hanging beneath.
+pub fn nimbostratus_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    ellipsoid(&mut m, [0.0, 0.0, 1.0], [7.6, 7.6, 1.1], -0.6, NS_BASE, NS_TOP, CLOUD_WEIGHT);
+    ellipsoid(&mut m, [2.4, 1.6, 1.4], [4.4, 4.0, 0.8], -0.6, NS_BASE, NS_TOP, CLOUD_WEIGHT);
+    for (x, y) in [(-3.8f32, 1.2f32), (-1.0, -3.9), (2.6, -2.2), (3.9, 3.1), (-2.8, 4.2), (0.8, 1.0)] {
+        ellipsoid(&mut m, [x, y, 0.15], [1.3, 0.9, 0.4], -1.4, NS_BASE, NS_BASE, CLOUD_WEIGHT);
+    }
+    m
+}
+
+/// Cirrus: high, thin, fibrous streaks ("mares' tails") drawn out along
+/// the jet (+x, turned to the wind), each ending in a small hook where
+/// falling ice crystals trail off.
+pub fn cirrus_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    for (y, x0, len) in [(-2.4f32, -5.0f32, 9.0f32), (-1.2, -4.0, 8.0), (0.0, -6.0, 11.0), (1.2, -3.4, 8.4), (2.4, -5.4, 9.6)] {
+        let cx = x0 + len / 2.0;
+        ellipsoid(&mut m, [cx, y, 0.0], [len / 2.0, 0.28, 0.1], -1.5, CI_WISP, CI_WISP, CLOUD_WEIGHT);
+        // The hook: a short fallstreak curling back and down.
+        ellipsoid(&mut m, [x0 + len - 0.2, y + 0.45, -0.25], [0.7, 0.2, 0.12], -1.5, CI_WISP, CI_WISP, CLOUD_WEIGHT);
+    }
+    m
+}
+
+/// The sun, drawn over the landscape along the light direction: a sphere
+/// whose size and glow the instance sets from the heat.
+pub fn sun_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    ellipsoid(&mut m, [0.0, 0.0, 0.0], [1.0, 1.0, 1.0], -std::f32::consts::FRAC_PI_2, [1.0; 3], [1.0; 3], 0.0);
+    m
+}
+
+/// A tree's root system, below the tile surface (z ≤ 0): a taproot
+/// plunging down (reach set by the instance scale), a shallow fibrous
+/// root plate, and a few sinker roots. Instance-colored.
+pub fn root_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    cone(&mut m, 8, 0.0, 0.0, 0.16, 0.0, -3.2, [1.0; 3], 0.0);
+    cone(&mut m, 12, 0.0, 0.0, 0.85, -0.05, -0.55, [1.0; 3], 0.0);
+    for k in 0..5 {
+        let a = std::f32::consts::TAU * k as f32 / 5.0 + 0.4;
+        cone(&mut m, 6, 0.5 * a.cos(), 0.5 * a.sin(), 0.08, -0.2, -1.3, [1.0; 3], 0.0);
     }
     m
 }
@@ -290,8 +393,78 @@ mod tests {
         }
         check(&base_mesh(crate::sim::hex::Grid::LEGACY));
         check(&mushroom_mesh());
-        check(&cloud_mesh());
-        check(&sheet_mesh());
+        for m in [cumulus_mesh(), cumulonimbus_mesh(), nimbostratus_mesh(), cirrus_mesh(), sun_mesh(), root_mesh(), tile_top_mesh()] {
+            check(&m);
+        }
+    }
+
+    fn extent(m: &MeshData) -> ([f32; 3], [f32; 3]) {
+        let mut lo = [f32::MAX; 3];
+        let mut hi = [f32::MIN; 3];
+        for v in &m.vertices {
+            for k in 0..3 {
+                lo[k] = lo[k].min(v.pos[k]);
+                hi[k] = hi[k].max(v.pos[k]);
+            }
+        }
+        (lo, hi)
+    }
+
+    #[test]
+    fn cloud_genera_have_their_real_shapes() {
+        let (cu_lo, cu_hi) = extent(&cumulus_mesh());
+        let (cb_lo, cb_hi) = extent(&cumulonimbus_mesh());
+        let (ns_lo, ns_hi) = extent(&nimbostratus_mesh());
+        let (ci_lo, ci_hi) = extent(&cirrus_mesh());
+        let height = |lo: [f32; 3], hi: [f32; 3]| hi[2] - lo[2];
+        // The thunderhead towers over everything; cirrus and the rain
+        // layer are thin; cumulus heaps are modest.
+        assert!(height(cb_lo, cb_hi) > 3.0 * height(cu_lo, cu_hi));
+        assert!(height(ns_lo, ns_hi) < 3.0 && height(ci_lo, ci_hi) < 1.0);
+        // Cirrus streaks are long and thin along the wind (x) axis.
+        let ci = extent(&cirrus_mesh());
+        assert!((ci.1[0] - ci.0[0]) > 1.4 * (ci.1[1] - ci.0[1]));
+        // Everything stays within the cloud shader's fade radius (8).
+        for (lo, hi) in [(cu_lo, cu_hi), (cb_lo, cb_hi), (ns_lo, ns_hi), (ci_lo, ci_hi)] {
+            assert!(lo[0] > -8.5 && hi[0] < 8.5 && lo[1] > -8.5 && hi[1] < 8.5);
+        }
+        // Tops lighter than bases (baked gradient).
+        let cb = cumulonimbus_mesh();
+        let top = cb.vertices.iter().max_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
+        let bottom = cb.vertices.iter().min_by(|a, b| a.pos[2].total_cmp(&b.pos[2])).unwrap();
+        assert!(top.color[0] > bottom.color[0] + 0.3);
+    }
+
+    #[test]
+    fn cloud_skins_wind_counter_clockwise_from_outside() {
+        // The cloud pipeline culls back faces (counter-clockwise front):
+        // every triangle's right-hand normal must point out of the volume,
+        // along the vertices' outward normals.
+        for m in [cumulus_mesh(), cumulonimbus_mesh(), nimbostratus_mesh(), cirrus_mesh()] {
+            for t in m.indices.chunks(3) {
+                let [a, b, c] = [m.vertices[t[0] as usize], m.vertices[t[1] as usize], m.vertices[t[2] as usize]];
+                let u = [b.pos[0] - a.pos[0], b.pos[1] - a.pos[1], b.pos[2] - a.pos[2]];
+                let v = [c.pos[0] - a.pos[0], c.pos[1] - a.pos[1], c.pos[2] - a.pos[2]];
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                let len = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                if len < 1e-6 {
+                    continue; // degenerate sliver at a pole
+                }
+                let out = [
+                    a.normal[0] + b.normal[0] + c.normal[0],
+                    a.normal[1] + b.normal[1] + c.normal[1],
+                    a.normal[2] + b.normal[2] + c.normal[2],
+                ];
+                let d = n[0] * out[0] + n[1] * out[1] + n[2] * out[2];
+                assert!(d > 0.0, "a cloud triangle faces inward");
+            }
+        }
+    }
+
+    #[test]
+    fn roots_grow_down_from_the_surface() {
+        let (lo, hi) = extent(&root_mesh());
+        assert!(hi[2] <= 0.0 && lo[2] < -3.0);
     }
 
     #[test]

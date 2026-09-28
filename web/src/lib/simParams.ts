@@ -30,6 +30,9 @@ export type SimParams = {
   climateZones: number;
   rivers: number;
   grazing: number;
+  physiology: number;
+  seasons: number;
+  cloudDynamics: number;
   seedTreeP: number;
   seedGrassP: number;
   /** Map size in tiles per side (applies on Reseed). */
@@ -64,6 +67,9 @@ export const DEFAULT_PARAMS: SimParams = {
   climateZones: 1.0,
   rivers: 1.0,
   grazing: 1.0,
+  physiology: 1.0,
+  seasons: 1.0,
+  cloudDynamics: 1.0,
   seedTreeP: 0.0,
   seedGrassP: 0.0,
   width: 256,
@@ -99,7 +105,7 @@ export const PRESETS: Preset[] = [
     key: "flat-plain",
     label: "Flat plain",
     hint: "no relief, rivers, climate zones, grazers, or grass types: nothing to sort by (~2.5 effective types)",
-    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0 },
+    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0, physiology: 0, seasons: 0, cloudDynamics: 0 },
   },
   {
     key: "moist-forest",
@@ -176,6 +182,9 @@ export const PARAM_FIELDS: ParamField[] = [
   { key: "climateZones", label: "Climate zones %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "rivers", label: "Rivers & floods %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "grazing", label: "Grazing %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "physiology", label: "Tree physiology %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "seasons", label: "Seasons %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "cloudDynamics", label: "Dynamic clouds %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "seedTreeP", label: "Seed trees %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "seedGrassP", label: "Seed grass %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "width", label: "Map width (tiles)", kind: "int", min: 8, max: 512, step: 8, appliesOnReseed: true },

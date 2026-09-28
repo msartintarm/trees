@@ -288,6 +288,101 @@ pub const RIPARIAN_BROWSE: f64 = 2.0;
 /// piosphere decay distance from water (tiles).
 pub const GRAZE_HAZARD: f64 = 1.5;
 pub const GRAZE_REACH: f64 = 18.0;
+/// Physiology and phenology (see Params).
+pub const PHYSIOLOGY: f64 = 1.0;
+pub const SEASONS: f64 = 1.0;
+/// Time scale: vegetation runs at about one year per tick (lifespans of
+/// centuries, maturity in decades, seed jumps of tens of metres a year).
+/// Weather is stylized — each cloud crossing stands for a season's storm
+/// track — and climate swings are multi-decadal oscillations.
+///
+/// Carbon balance per tree, per tick (reserve 0..1): income = CARBON_GAIN
+/// × light × thermal bell × water; upkeep = CARBON_COST × Q10^(Δt/Q10_STEP)
+/// where Δt is the site's (climate-damped, acclimated) temperature above
+/// the species' own optimum — respiration climbs with heat, canonically ×2
+/// per 10 °C, and a temperature-index step of 0.25 ≈ 10 °C.
+pub const CARBON_GAIN: f64 = 0.05;
+pub const CARBON_COST: f64 = 0.02;
+/// Saplings respire in proportion to their small size and shade-acclimated
+/// leaves.
+pub const SAPLING_COST: f64 = 0.6;
+pub const Q10: f64 = 2.0;
+pub const Q10_STEP: f64 = 0.25;
+/// Water that fully satisfies a tree's demand (tree_water units).
+pub const WATER_SUFFICIENT: f64 = 0.45;
+/// Canopy trees shade each other: light = 1 / (1 + this × mature neighbors).
+pub const CROWD_LIGHT: f64 = 0.05;
+/// Starvation: below STARVE_BELOW reserve, hazard rises (quadratically)
+/// to STARVE_HAZARD at an empty reserve.
+pub const STARVE_BELOW: f64 = 0.25;
+pub const STARVE_HAZARD: f64 = 0.06;
+/// Carbon an oak spends on a mast crop.
+pub const MAST_COST: f64 = 0.015;
+/// Rooting: depth reaches (1 − 1/e) of the species' taproot at this age.
+pub const ROOT_TIME: f64 = 30.0;
+/// Flood duration: ticks a tree has spent waterlogged (inundated, or
+/// groundwater above SOAK_LEVEL); beyond its species tolerance the roots
+/// rot at up to FLOOD_ROT hazard. Drained ground dries out 2 per tick.
+pub const SOAK_LEVEL: f64 = 0.7;
+pub const FLOOD_ROT: f64 = 0.08;
+/// Climate-triggered pests: outbreak seeding × (1 + BEETLE_WEAK × beetle
+/// × (1 − reserve)) — bark beetles overwhelm carbon-starved, drought-
+/// stressed hosts — × (1 + WET_ROT × wet_rot × wet-year anomaly) — root
+/// rots and water moulds thrive in wet years.
+pub const BEETLE_WEAK: f64 = 8.0;
+pub const WET_ROT: f64 = 4.0;
+/// Deciduous canopies are bare through spring: the understory beneath
+/// them gets this much of the shade back.
+pub const DECID_RELIEF: f64 = 0.35;
+/// Dynamic clouds (see Params). Water per cloud is 0..~1.2 (a full
+/// thunderhead). Per tick: evaporation from the ground below (moist soil,
+/// groundwater, rivers) and orographic lift on windward slopes add water;
+/// descent on lee slopes, raining, and — for small cumulus — evaporation
+/// over hot dry ground remove it.
+pub const CLOUD_DYNAMICS: f64 = 1.0;
+pub const CLOUD_EVAP: f64 = 0.018;
+pub const CLOUD_LIFT: f64 = 0.35;
+pub const CLOUD_SINK: f64 = 0.25;
+pub const CLOUD_RAIN_OUT: f64 = 0.03;
+pub const CUMULUS_DRY: f64 = 0.02;
+/// Genus transitions (with hysteresis): cumulus towers into cumulonimbus
+/// above CB_WATER over warm ground (temperature index ≥ CB_HEAT); a
+/// thunderhead that rains below CB_SPENT collapses, leaving its anvil as
+/// cirrus; cirrus that fills above FRONT_WATER thickens and lowers into
+/// nimbostratus (a front arriving); spent nimbostratus below NS_SPENT
+/// breaks up into fair-weather cumulus.
+pub const CB_WATER: f64 = 0.75;
+pub const CB_HEAT: f64 = 0.45;
+pub const CB_SPENT: f64 = 0.2;
+pub const FRONT_WATER: f64 = 0.6;
+pub const NS_SPENT: f64 = 0.15;
+/// Terrain rise (height per world unit along the wind) strong enough to
+/// force a well-fed cumulus into a thunderhead even over cool ground.
+pub const FORCED_LIFT: f64 = 0.05;
+/// Orographic precipitation: any non-cirrus cloud holding more than
+/// OROG_WATER rains on windward slopes rising faster than OROG_SLOPE —
+/// air forced up the ridge cools and condenses — wringing out its water so
+/// the lee side lies in a rain shadow.
+pub const OROG_SLOPE: f64 = 0.02;
+pub const OROG_WATER: f64 = 0.35;
+/// How fast a changing cloud morphs into its new form (per tick).
+pub const CLOUD_MORPH: f32 = 0.06;
+/// A cloud rains / throws lightning only with this much water (and a
+/// thunderhead only once mostly grown).
+pub const RAIN_WATER: f64 = 0.2;
+/// In-place convective initiation: candidate sites per 4096 tiles per tick
+/// and the base chance a perfectly warm, moist, windward site bubbles up a
+/// new cumulus.
+pub const INIT_SITES: f64 = 2.0;
+/// Chance per tick a mature thunderhead's gust front triggers a daughter
+/// cell at its leading edge (multicell storms).
+pub const OUTFLOW_P: f64 = 0.008;
+pub const INIT_P: f64 = 0.6;
+/// Recent-death tally decay per tick (≈ a 50-tick window).
+pub const DEATH_RECENT_KEEP: f32 = 0.98;
+/// How much longer the flat background lifetime runs once physiology
+/// models the mechanistic deaths.
+pub const PHYSIOLOGY_LIFE: f64 = 0.4;
 /// How much of the climate swing reaches grass niche fit (see niche_site).
 pub const NICHE_CLIMATE: f64 = 0.35;
 /// Annual grass: per-tick germination chance from a full soil seed bank
@@ -399,6 +494,12 @@ pub struct Storm {
     pub vel: [f64; 2],
     pub radius: f64,
     pub spawned: u64,
+    /// Water content (dynamic clouds): feeds growth, rain, and lightning.
+    pub water: f64,
+    /// The genus this cloud is changing from, and how far the change has
+    /// progressed (1 = fully its current genus).
+    pub from: CloudKind,
+    pub morph: f32,
 }
 
 /// Seed-rain kernel weight by hex distance from a mature tree: the
@@ -486,6 +587,19 @@ pub struct Params {
     pub rivers: f64,
     /// Grazing by herbivores on grass, heaviest near water (piospheres).
     pub grazing: f64,
+    /// Tree physiology: per-tree carbon reserves (income vs heat-rising
+    /// upkeep, starvation), age-deepening roots reaching groundwater,
+    /// flood tolerance by duration, climate-triggered pests, annual
+    /// masting. 0 = the older flat-hazard model.
+    pub physiology: f64,
+    /// Phenology: deciduous canopies let spring light through to the
+    /// understory (and show the seasons at slow speeds). 0 = none.
+    pub seasons: f64,
+    /// Dynamic clouds: each cloud carries water, grows and changes genus
+    /// with the ground beneath it (convection, orographic lift, fronts),
+    /// rains itself out, and new cumulus form in place. 0 = clouds keep
+    /// their birth genus and drift across unchanged.
+    pub cloud_dynamics: f64,
     pub seed_tree_p: f64,
     pub seed_grass_p: f64,
     /// Map size in tiles (applies on the next reseed, like the seeding
@@ -523,6 +637,9 @@ impl Default for Params {
             climate_zones: CLIMATE_ZONES,
             rivers: RIVERS,
             grazing: GRAZING,
+            physiology: PHYSIOLOGY,
+            seasons: SEASONS,
+            cloud_dynamics: CLOUD_DYNAMICS,
             seed_tree_p: SEED_TREE_P,
             seed_grass_p: SEED_GRASS_P,
             width: Grid::DEFAULT.width as u32,
@@ -544,6 +661,9 @@ impl Params {
             climate_zones: 0.0,
             rivers: 0.0,
             grazing: 0.0,
+            physiology: 0.0,
+            seasons: 0.0,
+            cloud_dynamics: 0.0,
             ..Params::default()
         }
     }
@@ -573,6 +693,9 @@ impl Params {
         self.climate_zones = prob(self.climate_zones, CLIMATE_ZONES);
         self.rivers = prob(self.rivers, RIVERS);
         self.grazing = prob(self.grazing, GRAZING);
+        self.physiology = prob(self.physiology, PHYSIOLOGY);
+        self.seasons = prob(self.seasons, SEASONS);
+        self.cloud_dynamics = prob(self.cloud_dynamics, CLOUD_DYNAMICS);
         self.mutation_rate = if self.mutation_rate.is_finite() {
             self.mutation_rate.clamp(0.0, 0.2)
         } else {
@@ -714,6 +837,17 @@ pub struct SpeciesTraits {
     /// wind and water ~100 m / 800 m.
     pub ldd_scale: f64,
     pub ldd_cap: f64,
+    /// Taproot reach, 0..1: how much of the groundwater an old tree taps
+    /// (deep-rooted acacia and oak ≫ shallow-rooted willow).
+    pub taproot: f64,
+    /// Ticks of waterlogging the roots tolerate before rotting.
+    pub flood_days: f64,
+    /// 0 evergreen .. 1 fully deciduous (bare in winter and early spring).
+    pub deciduous: f64,
+    /// Bark-beetle susceptibility when carbon-starved (pine ≫ others).
+    pub beetle: f64,
+    /// Root-rot / water-mould susceptibility in wet years (oak ≫ others).
+    pub wet_rot: f64,
 }
 
 pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
@@ -751,6 +885,11 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         seedbed: false,
         ldd_scale: 6.0,
         ldd_cap: 40.0,
+        taproot: 1.0,
+        flood_days: 4.0,
+        deciduous: 0.4,
+        beetle: 0.3,
+        wet_rot: 0.0,
     },
     SpeciesTraits {
         name: "Oak",
@@ -786,6 +925,11 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         seedbed: false,
         ldd_scale: 8.0,
         ldd_cap: 40.0,
+        taproot: 0.9,
+        flood_days: 12.0,
+        deciduous: 1.0,
+        beetle: 0.2,
+        wet_rot: 1.0,
     },
     SpeciesTraits {
         name: "Pine",
@@ -821,6 +965,11 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         seedbed: false,
         ldd_scale: 5.0,
         ldd_cap: 60.0,
+        taproot: 0.6,
+        flood_days: 4.0,
+        deciduous: 0.0,
+        beetle: 1.0,
+        wet_rot: 0.2,
     },
     SpeciesTraits {
         name: "Willow",
@@ -856,6 +1005,11 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         seedbed: true,
         ldd_scale: 10.0,
         ldd_cap: 80.0,
+        taproot: 0.5,
+        flood_days: 60.0,
+        deciduous: 1.0,
+        beetle: 0.2,
+        wet_rot: 0.3,
     },
 ];
 
@@ -975,6 +1129,85 @@ pub struct Remains {
     pub life_ratio: f32,
     /// The tree's grown form (0 broad … 1 tall/thin) carried to the husk.
     pub etiolation: f32,
+    /// What killed it (trees only).
+    pub cause: DeathCause,
+}
+
+/// Why a tree died — recorded on its husk and tallied for the HUD.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum DeathCause {
+    Age = 0,
+    Drought = 1,
+    Starvation = 2,
+    Frost = 3,
+    Flood = 4,
+    Pests = 5,
+    Crowding = 6,
+    Fire = 7,
+    Windthrow = 8,
+    Browsed = 9,
+    Scoured = 10,
+}
+
+pub const DEATH_CAUSE_COUNT: usize = 11;
+
+/// Cloud lifecycle events, tallied for the HUD and probes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CloudEvent {
+    /// A cumulus bubbled up in place over warm, moist or windward ground.
+    Formed = 0,
+    /// Cumulus towered into a cumulonimbus.
+    Towered = 1,
+    /// A spent thunderhead collapsed, leaving its anvil as cirrus.
+    Collapsed = 2,
+    /// Cirrus thickened and lowered into nimbostratus (a front).
+    Front = 3,
+    /// Spent nimbostratus broke up into fair-weather cumulus.
+    BrokeUp = 4,
+    /// A cloud evaporated away.
+    Evaporated = 5,
+    /// A thunderhead's gust front triggered a daughter cell.
+    Daughter = 6,
+}
+
+pub const CLOUD_EVENT_COUNT: usize = 7;
+
+impl DeathCause {
+    pub fn from_u8(v: u8) -> DeathCause {
+        use DeathCause::*;
+        match v {
+            1 => Drought,
+            2 => Starvation,
+            3 => Frost,
+            4 => Flood,
+            5 => Pests,
+            6 => Crowding,
+            7 => Fire,
+            8 => Windthrow,
+            9 => Browsed,
+            10 => Scoured,
+            _ => Age,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        use DeathCause::*;
+        match self {
+            Age => "old age",
+            Drought => "drought",
+            Starvation => "starvation",
+            Frost => "frost",
+            Flood => "root rot",
+            Pests => "pests",
+            Crowding => "crowding",
+            Fire => "fire",
+            Windthrow => "windthrow",
+            Browsed => "browsed",
+            Scoured => "flood scour",
+        }
+    }
 }
 
 /// Groundwater map from the seed: the catena water of the terrain (valley
@@ -1048,6 +1281,19 @@ pub struct World {
     seed_rain: Vec<[f32; SPECIES_COUNT]>,
     /// Hex distance to the nearest mature tree within range (255 = none).
     tree_dist: Vec<u8>,
+    /// Hex distance to the nearest mature evergreen (255 = none in range).
+    evergreen_dist: Vec<u8>,
+    /// Per-tree carbon reserve, 0..1.
+    reserve: Vec<f32>,
+    /// Consecutive-ish ticks a tree has been waterlogged.
+    soaked: Vec<u8>,
+    /// Death cause recorded on a husk.
+    remains_cause: Vec<u8>,
+    /// Tree deaths by cause: all-time, and a decaying recent tally.
+    deaths_total: [u32; DEATH_CAUSE_COUNT],
+    deaths_recent: [f32; DEATH_CAUSE_COUNT],
+    /// Cloud lifecycle events since the world began.
+    cloud_events: [u32; CLOUD_EVENT_COUNT],
     /// Mature-tree count at distance 1 (crowding pressure).
     mature_nbrs: Vec<u8>,
     /// Grass count at distance 1 (clonal spread pressure).
@@ -1141,6 +1387,13 @@ impl World {
             mast: false,
             seed_rain: vec![[0.0; SPECIES_COUNT]; n],
             tree_dist: vec![255; n],
+            evergreen_dist: vec![255; n],
+            reserve: vec![0.0; n],
+            soaked: vec![0; n],
+            remains_cause: vec![0; n],
+            deaths_total: [0; DEATH_CAUSE_COUNT],
+            deaths_recent: [0.0; DEATH_CAUSE_COUNT],
+            cloud_events: [0; CLOUD_EVENT_COUNT],
             mature_nbrs: vec![0; n],
             grass_nbrs: vec![0; n],
             tree_nbrs: vec![0; n],
@@ -1198,6 +1451,16 @@ impl World {
     /// Oak mast years: synchronized across the whole map (one draw per
     /// "year"), likelier after a moist year-start — weather-cued masting.
     pub fn mast_at(&self, tick: u64) -> bool {
+        if self.params.physiology > 0.0 {
+            // A tick is a year: mast years are cued by moist weather, but
+            // a mast year exhausts the trees — never two in a row (the
+            // real 2–5 year masting rhythm).
+            let draw = |t: u64| {
+                let (_, m) = self.climate_at(t);
+                rng::uniform01(self.seed, t as u32, 0, Stream::Mast) < 0.15 + 0.4 * m
+            };
+            return draw(tick) && !(tick > 0 && draw(tick - 1));
+        }
         let year = tick / MAST_YEAR_TICKS;
         let (_, m) = self.climate_at(year * MAST_YEAR_TICKS);
         rng::uniform01(self.seed, year as u32, 0, Stream::Mast) < 0.15 + 0.4 * m
@@ -1313,11 +1576,17 @@ impl World {
     /// swing is damped like the niche climate so the snowline doesn't
     /// flicker across the lowlands.
     pub fn snow_cover(&self, index: usize) -> f32 {
+        self.snow_cover_at(index, 0.0)
+    }
+
+    /// Snow cover with the snowline lowered by `extra_cold` (the display's
+    /// winter, at slow seasonal speeds).
+    pub fn snow_cover_at(&self, index: usize, extra_cold: f64) -> f32 {
         if self.params.climate_zones <= 0.0 {
             return 0.0;
         }
         let aspect = (self.terrain.heat[index] as f64 - 0.5) * 0.5 * self.params.terrain;
-        let t = 0.5 + (self.sun - 0.5) * NICHE_CLIMATE + self.lapse(index) + aspect;
+        let t = 0.5 + (self.sun - 0.5) * NICHE_CLIMATE + self.lapse(index) + aspect - extra_cold;
         ((SNOW_T - t) / SNOW_BAND).clamp(0.0, 1.0) as f32
     }
 
@@ -1712,6 +1981,7 @@ impl World {
                     3.0 * (self.params.tree_maturity_age as f64 * sp2.traits().maturity) as f32;
                 (self.remains_etiol[index] as f32 / denom.max(1.0)).min(1.0)
             },
+            cause: DeathCause::from_u8(self.remains_cause[index]),
         })
     }
 
@@ -1741,12 +2011,24 @@ impl World {
 
     /// Inject a cloud directly (tests, and a possible future cloud brush).
     pub fn spawn_cloud(&mut self, kind: CloudKind, pos: [f64; 2], radius: f64, tick: u64) {
+        // Birth water by genus: fair-weather cumulus and high cirrus are
+        // thin, the rain-bearers full; a moist season adds to it.
+        let m = self.moisture;
+        let water = match kind {
+            CloudKind::Cumulus => 0.3 + 0.2 * m,
+            CloudKind::Cumulonimbus => 0.9,
+            CloudKind::Nimbostratus => 0.9,
+            CloudKind::Cirrus => 0.2 + 0.35 * m,
+        };
         self.storms.push(Storm {
             kind,
             pos,
             vel: [0.0, 0.0],
             radius: radius.clamp(2.0, 20.0),
             spawned: tick,
+            water,
+            from: kind,
+            morph: 1.0,
         });
     }
 
@@ -1838,6 +2120,9 @@ impl World {
     }
 
     fn plant_tree_with(&mut self, index: usize, sp: Species, gene: [f32; 2], tick: u64) {
+        // A seedling starts on its seed's reserves (acorns carry most).
+        self.reserve[index] = (0.35 + 0.4 * sp.traits().seed_reserve) as f32;
+        self.soaked[index] = 0;
         self.species[index] = sp as u8;
         self.etiol[index] = 0;
         self.pest[index] = 0;
@@ -1861,8 +2146,11 @@ impl World {
             return false;
         }
         let (sp, gene) = (self.species(index), self.genome[index]);
+        let stored = self.reserve[index];
         self.burn[index] = 0;
         self.plant_tree_with(index, sp, gene, tick);
+        // The root crown's stores feed the new shoots.
+        self.reserve[index] = self.reserve[index].max(stored * 0.7);
         true
     }
 
@@ -1923,6 +2211,7 @@ impl World {
         self.tree_nbrs.fill(0);
         self.nursed.fill(0);
         self.tree_dist.fill(255);
+        self.evergreen_dist.fill(255);
         self.mature_nbrs.fill(0);
         self.grass_nbrs.fill(0);
         self.grass_nbrs_k.fill([0; GRASS_KIND_COUNT]);
@@ -2007,6 +2296,9 @@ impl World {
                                 self.gene_rain[j][sp][1] += kw * g[1];
                             }
                             self.tree_dist[j] = self.tree_dist[j].min(d as u8);
+                            if SPECIES_TABLE[sp].deciduous < 0.5 {
+                                self.evergreen_dist[j] = self.evergreen_dist[j].min(d as u8);
+                            }
                             if d == 1 {
                                 self.mature_nbrs[j] += 1;
                                 // Kin nursing: a same-species seedling next
@@ -2129,6 +2421,8 @@ impl World {
             s.pos[1] += w[1];
         }
 
+        self.cloud_life(tick);
+
         // Dissipate clouds that have crossed and left the world behind.
         self.storms.retain(|s| {
             let out = [s.pos[0] - c[0], s.pos[1] - c[1]];
@@ -2141,8 +2435,15 @@ impl World {
             let storm = self.storms[idx];
             let tr = storm.kind.traits();
             let center = storm.pos;
-            if tr.rains {
-                let core = storm.radius * tr.rain_core;
+            // Dynamic clouds rain only while they hold water (and a
+            // thunderhead only once grown); the rain shaft shrinks as the
+            // cloud rains itself out.
+            let dyn_ = p.cloud_dynamics > 0.0;
+            let grown = !dyn_ || (storm.water > RAIN_WATER && storm.morph > 0.5);
+            let shaft = if dyn_ { (storm.water / 0.6).clamp(0.3, 1.0) } else { 1.0 };
+            let orographic = dyn_ && self.orographic_rain(&storm);
+            if (tr.rains && grown) || orographic {
+                let core = if tr.rains && grown { storm.radius * tr.rain_core * shaft } else { storm.radius * 0.5 };
                 for i in self.grid.cells_in_box(center, core) {
                     let (q, r) = self.grid.index_to_axial(i);
                     let (x, y) = hex::axial_to_world(q, r);
@@ -2176,6 +2477,7 @@ impl World {
                     if rng::uniform01(self.seed, key, tick, Stream::Windthrow) < pw
                         && !self.try_resprout(i, tick)
                     {
+                        self.record_death(i, DeathCause::Windthrow);
                         self.leave_remains(i, false, tick);
                         self.state[i] = Cell::Bare;
                     }
@@ -2183,7 +2485,7 @@ impl World {
             }
             // Lightning: only the thunderhead throws bolts, anywhere under
             // the cloud — possibly outside its rain core.
-            let bolt_p = p.storm_lightning_p * tr.lightning;
+            let bolt_p = if grown { p.storm_lightning_p * tr.lightning } else { 0.0 };
             let k = |j: u32| rng::uniform01(self.seed, idx as u32 * 16 + j, tick, Stream::StormBolt);
             if bolt_p > 0.0 && k(0) < bolt_p {
                 let rr = storm.radius * k(1).sqrt();
@@ -2193,6 +2495,155 @@ impl World {
                     if self.flammable(i, tick) && self.wet[i] == 0 {
                         self.burn[i] = BURN_TICKS;
                     }
+                }
+            }
+        }
+    }
+
+    /// Whether a cloud is being forced up a windward slope hard enough, with
+    /// enough water, to rain there whatever its genus (not thin cirrus).
+    fn orographic_rain(&self, s: &Storm) -> bool {
+        if s.kind == CloudKind::Cirrus || s.water <= OROG_WATER {
+            return false;
+        }
+        let speed = (s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]).sqrt().max(1e-9);
+        self.slope_along(s.pos[0], s.pos[1], [s.vel[0] / speed, s.vel[1] / speed]) > OROG_SLOPE
+    }
+
+    /// Surface height (render units, hills + mountains) at a world point,
+    /// or None off the map.
+    fn height_at(&self, x: f64, y: f64) -> Option<f64> {
+        self.grid.pick(x, y).map(|i| self.elevation(i) as f64)
+    }
+
+    /// Terrain rise along a direction at a point: + climbing (windward
+    /// lift), − descending (lee), in height units per world unit.
+    fn slope_along(&self, x: f64, y: f64, dir: [f64; 2]) -> f64 {
+        let step = 4.0;
+        match (
+            self.height_at(x + dir[0] * step, y + dir[1] * step),
+            self.height_at(x - dir[0] * step, y - dir[1] * step),
+        ) {
+            (Some(a), Some(b)) => (a - b) / (2.0 * step),
+            _ => 0.0,
+        }
+    }
+
+    /// Evaporation source under a point, 0..1: the season's moisture, wet
+    /// ground, groundwater, and open river water.
+    fn evaporation_at(&self, i: usize) -> f64 {
+        let ground = if self.wet[i] > 0 { 1.0 } else { self.water_table(i) as f64 };
+        let river = if self.channel[i] { 1.0 } else { 0.0 };
+        (0.5 * self.moisture + 0.5 * ground).max(river)
+    }
+
+    /// Dynamic clouds: water budgets, genus transitions, and in-place
+    /// convective initiation (see CLOUD_* constants).
+    fn cloud_life(&mut self, tick: u64) {
+        let dyn_ = self.params.cloud_dynamics;
+        if dyn_ <= 0.0 {
+            return;
+        }
+        for k in 0..self.storms.len() {
+            let mut s = self.storms[k];
+            s.morph = (s.morph + CLOUD_MORPH).min(1.0);
+            let speed = (s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]).sqrt().max(1e-9);
+            let dir = [s.vel[0] / speed, s.vel[1] / speed];
+            let Some(i) = self.grid.pick(s.pos[0], s.pos[1]) else {
+                self.storms[k] = s; // still offshore: no ground to feed on
+                continue;
+            };
+            let slope = self.slope_along(s.pos[0], s.pos[1], dir);
+            let evap = self.evaporation_at(i);
+            let heat = self.temperature(i);
+            let raining = (s.kind.traits().rains && s.water > RAIN_WATER) || self.orographic_rain(&s);
+            let mut dw = CLOUD_EVAP * evap + CLOUD_LIFT * slope.max(0.0) - CLOUD_SINK * (-slope).max(0.0);
+            if raining {
+                dw -= CLOUD_RAIN_OUT;
+            }
+            if s.kind == CloudKind::Cumulus {
+                dw -= CUMULUS_DRY * heat * (1.0 - evap);
+            }
+            s.water = (s.water + dw * dyn_).clamp(-0.01, 1.2);
+            let next = match s.kind {
+                // Towering needs an unstable column: surface heating, or
+                // air forced up a ridge (orographic convection).
+                CloudKind::Cumulus if s.water > CB_WATER && (heat > CB_HEAT || slope > FORCED_LIFT) => {
+                    Some(CloudKind::Cumulonimbus)
+                }
+                CloudKind::Cumulonimbus if s.water < CB_SPENT => Some(CloudKind::Cirrus),
+                CloudKind::Cirrus if s.water > FRONT_WATER => Some(CloudKind::Nimbostratus),
+                CloudKind::Nimbostratus if s.water < NS_SPENT => Some(CloudKind::Cumulus),
+                _ => None,
+            };
+            if let Some(n) = next {
+                let ev = match n {
+                    CloudKind::Cumulonimbus => CloudEvent::Towered,
+                    CloudKind::Cirrus => CloudEvent::Collapsed,
+                    CloudKind::Nimbostratus => CloudEvent::Front,
+                    CloudKind::Cumulus => CloudEvent::BrokeUp,
+                };
+                self.cloud_events[ev as usize] += 1;
+                s.from = s.kind;
+                s.kind = n;
+                s.morph = 0.0;
+            }
+            // The cloud grows or shrinks toward its genus' typical size.
+            let tr = s.kind.traits();
+            let target = 0.5 * (tr.radius_min + tr.radius_max);
+            s.radius += (target - s.radius) * 0.04;
+            self.storms[k] = s;
+        }
+        // Spent clouds evaporate away.
+        let before = self.storms.len();
+        self.storms.retain(|s| s.water > 0.0);
+        self.cloud_events[CloudEvent::Evaporated as usize] += (before - self.storms.len()) as u32;
+        // Multicell storms: a mature thunderhead's cold outflow (its gust
+        // front) lifts warm air at its leading edge into new cells.
+        let mut daughters = Vec::new();
+        for (k, s) in self.storms.iter().enumerate() {
+            if s.kind != CloudKind::Cumulonimbus || s.morph < 1.0 || s.water < 0.5 {
+                continue;
+            }
+            let u = |j: u32| rng::uniform01(self.seed, 4_000 + k as u32 * 8 + j, tick, Stream::StormSpawn);
+            if u(0) < OUTFLOW_P * dyn_ {
+                let speed = (s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]).sqrt().max(1e-9);
+                let side = (u(1) - 0.5) * 1.6;
+                let (fx, fy) = (s.vel[0] / speed, s.vel[1] / speed);
+                let pos = [
+                    s.pos[0] + s.radius * (fx - side * fy),
+                    s.pos[1] + s.radius * (fy + side * fx),
+                ];
+                daughters.push(pos);
+            }
+        }
+        for pos in daughters {
+            self.cloud_events[CloudEvent::Daughter as usize] += 1;
+            self.spawn_cloud(CloudKind::Cumulus, pos, 3.0, tick);
+            if let Some(c) = self.storms.last_mut() {
+                c.water = 0.45;
+            }
+        }
+        // Convection bubbles up new cumulus over warm, moist, windward
+        // ground (thermals and orographic lift), not only from upwind.
+        let (dir, _) = self.wind_at(tick);
+        let sites = (INIT_SITES * self.grid.area_ratio()).ceil() as u32;
+        for k in 0..sites {
+            let u = |j: u32| rng::uniform01(self.seed, k * 8 + j, tick, Stream::StormSpawn);
+            let t = (u(1) * self.grid.cells() as f64) as usize % self.grid.cells();
+            if self.channel[t] {
+                continue;
+            }
+            let (x, y) = self.grid.center(t);
+            let lift = 1.0 + 6.0 * self.slope_along(x, y, dir).max(0.0);
+            let heat = self.temperature(t);
+            let p = self.params.storm_rate * dyn_ * INIT_P * heat * self.evaporation_at(t) * lift;
+            if u(2) < p {
+                let radius = 2.5 + 1.5 * u(3);
+                self.spawn_cloud(CloudKind::Cumulus, [x, y], radius, tick);
+                self.cloud_events[CloudEvent::Formed as usize] += 1;
+                if let Some(c) = self.storms.last_mut() {
+                    c.water = 0.25;
                 }
             }
         }
@@ -2227,10 +2678,7 @@ impl World {
             if self.state[t] == Cell::Tree || self.remains_code[t] != 0 || self.burn[t] > 0 {
                 continue;
             }
-            let light = match self.tree_dist[t] {
-                255 => 1.0,
-                d => 1.0 - self.params.shade_strength * shade_suppression(d),
-            };
+            let light = self.canopy_light(t);
             // Germination scales with the global establishment knob (so
             // tree_growth_p = 0 truly freezes recruitment).
             let germ = LDD_GERMINATION * scale * self.tree_establishment(t, k, light);
@@ -2309,7 +2757,12 @@ impl World {
                 }
             } else if strength > 0.0 && self.is_mature(i, tick) {
                 let density = self.adults_near[i][sp] as f64 / 6.0;
-                let p = strength * PEST_SEED * susc * density * density;
+                let tr = &SPECIES_TABLE[sp];
+                let weak = 1.0 - self.reserve[i] as f64;
+                let wet_year = ((self.moisture - FLOOD_MOISTURE) / (1.0 - FLOOD_MOISTURE)).max(0.0);
+                let trigger = 1.0
+                    + self.params.physiology * (BEETLE_WEAK * tr.beetle * weak + WET_ROT * tr.wet_rot * wet_year);
+                let p = strength * PEST_SEED * susc * density * density * trigger;
                 if rng::uniform01(self.seed, i as u32 + self.grid.cells() as u32, tick, Stream::Pest) < p {
                     infect.push(i);
                 }
@@ -2357,6 +2810,7 @@ impl World {
                 Cell::Bare => false,
             };
             if scour {
+                self.record_death(i, DeathCause::Scoured);
                 self.state[i] = Cell::Bare;
                 self.clear_remains(i); // washed away, not left standing
             }
@@ -2392,6 +2846,7 @@ impl World {
                 continue;
             }
             if rng::uniform01(self.seed, i as u32 + self.grid.cells() as u32, tick, Stream::Browse) < BROWSE_KILL {
+                self.record_death(i, DeathCause::Browsed);
                 self.leave_remains(i, false, tick);
                 self.state[i] = Cell::Bare;
             } else {
@@ -2483,9 +2938,10 @@ impl World {
                         && rng::uniform01(self.seed, i as u32 + self.grid.cells() as u32, tick, Stream::Resprout)
                             < chance
                     {
-                        let (sp, gene) = (self.species(i), self.genome[i]);
+                        let (sp, gene, stored) = (self.species(i), self.genome[i], self.reserve[i]);
                         self.burn[i] = 0;
                         self.plant_tree_with(i, sp, gene, tick);
+                        self.reserve[i] = self.reserve[i].max(stored * 0.7);
                         self.ash[i] = ASH_TICKS;
                         continue;
                     }
@@ -2495,6 +2951,7 @@ impl World {
                     continue;
                 }
                 if self.state[i] != Cell::Bare {
+                    self.record_death(i, DeathCause::Fire);
                     self.leave_remains(i, true, tick);
                     // Fire mineralizes much of the biomass on the spot.
                     self.add_nutrients(
@@ -2523,7 +2980,10 @@ impl World {
             // climate ⇒ stress 1 ⇒ mean lifetime = the mean_life param.
             // Species bend the drought response via an exponent (neutral
             // stress is exactly 1, so calibration is preserved).
-            let base_stress = 0.4 + 1.2 * self.drought(i, self.tile_water(i));
+            let is_tree = self.state[i] == Cell::Tree;
+            // Trees drink what their roots reach; grass the shallow soil.
+            let water = if is_tree { self.tree_water(i, tick) } else { self.tile_water(i) };
+            let base_stress = 0.4 + 1.2 * self.drought(i, water);
             let (stress, mean) = match self.state[i] {
                 Cell::Grass => (
                     base_stress.powf(self.gmul(self.grass_kind(i).traits().drought_sensitivity)),
@@ -2535,9 +2995,13 @@ impl World {
                     // Hardiness flattens the stress curve both ways: less
                     // pain in drought, less relief in wet years. Vigor
                     // trades life span for recruitment.
+                    // With physiology, carbon starvation, flood rot and the
+                    // like kill explicitly, so the flat background hazard
+                    // covers less (PHYSIOLOGY_LIFE).
                     (
                         base_stress.powf(tr.drought_sensitivity / hardy as f64),
-                        self.params.tree_mean_life as f64 * tr.mean_life / vigor as f64,
+                        self.params.tree_mean_life as f64 * tr.mean_life / vigor as f64
+                            * (1.0 + PHYSIOLOGY_LIFE * self.params.physiology),
                     )
                 }
             };
@@ -2555,42 +3019,83 @@ impl World {
                 }
                 hazard = hazard.min(1.0);
             }
-            if self.state[i] == Cell::Tree {
+            // Trees: build the hazard from named parts so the death can be
+            // attributed to whichever added the most.
+            let mut parts = [0.0f64; DEATH_CAUSE_COUNT];
+            if is_tree {
+                let age_part = (1.0 / mean).min(hazard);
+                parts[DeathCause::Age as usize] = age_part;
+                parts[DeathCause::Drought as usize] = hazard - age_part;
+                let phys = self.params.physiology;
+                let tr = self.species(i).traits();
+                let apply = |hazard: &mut f64, parts: &mut [f64; DEATH_CAUSE_COUNT], cause: DeathCause, new: f64| {
+                    let new = new.clamp(0.0, 1.0);
+                    parts[cause as usize] += (new - *hazard).max(0.0);
+                    *hazard = new;
+                };
                 // Established roots outcompete a sapling for water on dry
                 // ground; a heavy pest load kills.
                 if !self.is_mature(i, tick) {
-                    let sens = self.species(i).traits().drought_sensitivity;
-                    hazard = (hazard * (1.0 + self.root_water_stress(i) * sens)).min(1.0);
+                    let h = hazard * (1.0 + self.root_water_stress(i) * tr.drought_sensitivity);
+                    apply(&mut hazard, &mut parts, DeathCause::Drought, h);
                 }
                 let load = self.pest[i] as f64 / 255.0;
-                hazard = 1.0 - (1.0 - hazard) * (1.0 - PEST_HAZARD * load);
-                let tr = self.species(i).traits();
-                // Frost kills tender trees in the cold zones; saturated
-                // ground suffocates even flood-tolerant roots.
-                hazard = (hazard * (1.0 + FROST_HAZARD * self.frost(i, tr.cold_hardy))).min(1.0);
+                let h = 1.0 - (1.0 - hazard) * (1.0 - PEST_HAZARD * load);
+                apply(&mut hazard, &mut parts, DeathCause::Pests, h);
+                // Frost kills tender trees in the cold zones.
+                let h = hazard * (1.0 + FROST_HAZARD * self.frost(i, tr.cold_hardy));
+                apply(&mut hazard, &mut parts, DeathCause::Frost, h);
+                // Waterlogging: the older instant model fades out as the
+                // duration model (roots rot only past the species'
+                // tolerance) fades in.
+                let wt = self.water_table(i) as f64;
                 if tr.flood_tolerant {
-                    let wt = self.water_table(i) as f64;
                     let sat = ((wt - ANOXIA_LEVEL) / (1.0 - ANOXIA_LEVEL)).clamp(0.0, 1.0);
-                    hazard = (hazard * (1.0 + self.params.rivers * ANOXIA_HAZARD * sat)).min(1.0);
+                    let h = hazard * (1.0 + (1.0 - phys) * self.params.rivers * ANOXIA_HAZARD * sat);
+                    apply(&mut hazard, &mut parts, DeathCause::Flood, h);
+                } else {
+                    let excess = (wt - 0.5).max(0.0);
+                    let h = hazard * (1.0 + (1.0 - phys) * WATERLOG_HAZARD * excess);
+                    apply(&mut hazard, &mut parts, DeathCause::Flood, h);
                 }
-            }
-            if self.state[i] == Cell::Tree && !self.species(i).traits().flood_tolerant {
-                let excess = (self.water_table(i) as f64 - 0.5).max(0.0);
-                hazard = (hazard * (1.0 + WATERLOG_HAZARD * excess)).min(1.0);
+                let over = (self.soaked[i] as f64 - tr.flood_days) / tr.flood_days;
+                if phys > 0.0 && over > 0.0 {
+                    let h = 1.0 - (1.0 - hazard) * (1.0 - phys * FLOOD_ROT * over.min(1.0));
+                    apply(&mut hazard, &mut parts, DeathCause::Flood, h);
+                }
+                // Carbon starvation: an emptied reserve (deep shade, a long
+                // drought, heat, pests) kills — the slow decline after a
+                // bad spell that a flat hazard can't produce.
+                let short = ((STARVE_BELOW - self.reserve[i] as f64) / STARVE_BELOW).clamp(0.0, 1.0);
+                if phys > 0.0 && short > 0.0 {
+                    let h = 1.0 - (1.0 - hazard) * (1.0 - phys * STARVE_HAZARD * short * short);
+                    apply(&mut hazard, &mut parts, DeathCause::Starvation, h);
+                }
             }
             if self.nursed[i] != 0 {
                 // The network feeds its kin: nursed seedlings die less.
                 hazard *= NURSE_FACTOR;
             }
-            if self.state[i] == Cell::Tree && self.mature_nbrs[i] > CROWD_FREE {
+            if is_tree && self.mature_nbrs[i] > CROWD_FREE {
                 let excess = (self.mature_nbrs[i] - CROWD_FREE) as f64;
                 let cp = (self.params.crowding_p * self.species(i).traits().crowding).min(1.0);
                 let p_crowd = 1.0 - (1.0 - cp).powf(excess);
-                hazard = 1.0 - (1.0 - hazard) * (1.0 - p_crowd);
+                let h = 1.0 - (1.0 - hazard) * (1.0 - p_crowd);
+                parts[DeathCause::Crowding as usize] += h - hazard;
+                hazard = h;
             }
             if rng::uniform01(self.seed, i as u32, tick, Stream::Mortality) < hazard
                 && !self.try_resprout(i, tick)
             {
+                if is_tree {
+                    let mut cause = 0;
+                    for (k, &v) in parts.iter().enumerate() {
+                        if v > parts[cause] {
+                            cause = k;
+                        }
+                    }
+                    self.record_death(i, DeathCause::from_u8(cause as u8));
+                }
                 self.leave_remains(i, false, tick);
                 self.state[i] = Cell::Bare;
                 self.burn[i] = 0;
@@ -2683,6 +3188,231 @@ impl World {
         }
     }
 
+    /// Understory light on a tile: 1 in the open, falling beside mature
+    /// canopy. With seasons, a deciduous canopy is bare through spring and
+    /// casts less shade than an evergreen one at the same distance.
+    pub fn canopy_light(&self, i: usize) -> f64 {
+        let s = self.params.shade_strength;
+        let d = self.tree_dist[i];
+        if d == 255 {
+            return 1.0;
+        }
+        let nearest = s * shade_suppression(d);
+        if self.params.seasons <= 0.0 {
+            return 1.0 - nearest;
+        }
+        let e = self.evergreen_dist[i];
+        let evergreen = if e == 255 { 0.0 } else { s * shade_suppression(e) };
+        let nearest = if e <= d { nearest } else { nearest * (1.0 - DECID_RELIEF * self.params.seasons) };
+        1.0 - nearest.max(evergreen)
+    }
+
+    /// How far a tree's roots reach toward the groundwater, 0..1: deepens
+    /// with age toward the species' taproot (saplings sip rain; old oaks
+    /// and acacias tap the water table).
+    pub fn root_depth(&self, i: usize, tick: u64) -> f64 {
+        if self.state[i] != Cell::Tree {
+            return 0.0;
+        }
+        let age = self.age(i, tick) as f64;
+        self.species(i).traits().taproot * (1.0 - (-age / ROOT_TIME).exp())
+    }
+
+    /// Water available to the tree on a tile: rain plus whatever of the
+    /// groundwater its roots reach (every plant got all of it before).
+    fn tree_water(&self, i: usize, tick: u64) -> f64 {
+        if self.wet[i] > 0 {
+            return 1.0;
+        }
+        let access = 1.0 + self.params.physiology * (self.root_depth(i, tick) - 1.0);
+        let wt = self.water_table(i) as f64 * WATER_TABLE_REACH * access;
+        let retention = 0.85 + 0.15 * self.soil_depth(i);
+        let m = (self.moisture + self.rain_shift(i)).clamp(0.0, 1.0);
+        (m + (1.0 - m) * wt) * retention
+    }
+
+    /// Carbon reserve of the tree on a tile, 0..1.
+    pub fn reserve(&self, i: usize) -> f32 {
+        if self.state[i] == Cell::Tree { self.reserve[i] } else { 0.0 }
+    }
+
+    /// Tree deaths by cause over roughly the last 50 ticks (decaying).
+    pub fn deaths_recent(&self) -> [f32; DEATH_CAUSE_COUNT] {
+        self.deaths_recent
+    }
+
+    /// Edit a cloud in place (render tests set up mid-transition states).
+    #[doc(hidden)]
+    pub fn debug_set_cloud(&mut self, k: usize, f: impl FnOnce(&mut Storm)) {
+        if let Some(c) = self.storms.get_mut(k) {
+            f(c);
+        }
+    }
+
+    /// Cloud lifecycle events since the world began (CloudEvent order).
+    pub fn cloud_events(&self) -> [u32; CLOUD_EVENT_COUNT] {
+        self.cloud_events
+    }
+
+    /// Tree deaths by cause since the world began.
+    pub fn deaths_total(&self) -> [u32; DEATH_CAUSE_COUNT] {
+        self.deaths_total
+    }
+
+    /// Everything that bears on a tile, as readable lines for the tile
+    /// inspector: the site (altitude, temperature, water, soil, light),
+    /// what grows there and how it's doing, or why the last occupant died.
+    pub fn inspect(&self, i: usize, tick: u64) -> String {
+        // Temperature index → a nominal °C (0 ≈ −5 °C, 1 ≈ 35 °C).
+        let celsius = |t: f64| -5.0 + 40.0 * t;
+        let pct = |v: f64| format!("{:.0}%", 100.0 * v);
+        let mut out = Vec::new();
+        let (q, r) = self.grid.index_to_axial(i);
+        out.push(format!("Tile ({q}, {r})"));
+        if self.channel[i] {
+            out.push("Open river water — nothing roots here".to_string());
+        }
+        out.push(format!(
+            "Altitude {} · {:.0} °C (site {:.0} °C){}",
+            pct(self.terrain.altitude[i] as f64),
+            celsius(self.temperature(i)),
+            celsius(self.niche_site(i).0),
+            if self.snow_cover(i) > 0.0 { " · snow" } else { "" }
+        ));
+        out.push(format!(
+            "Soil water {} · groundwater {} · soil depth {} · fertility {}",
+            pct(self.tile_water(i)),
+            pct(self.water_table(i) as f64),
+            pct(self.soil_depth(i)),
+            pct(self.nutrient_ratio(i) as f64)
+        ));
+        out.push(format!("Understory light {}", pct(self.canopy_light(i))));
+        match self.state[i] {
+            Cell::Tree => {
+                let sp = self.species(i);
+                let tr = sp.traits();
+                let age = self.age(i, tick);
+                let mature = if self.is_mature(i, tick) { "mature" } else { "sapling" };
+                out.push(format!("{} — age {age} ({mature})", tr.name));
+                if self.params.physiology > 0.0 {
+                    let temp = self.temperature(i);
+                    let bell = (-((temp - tr.temp_opt) / (tr.temp_width * 1.4)).powi(2)).exp();
+                    out.push(format!(
+                        "Carbon reserve {} · thermal fit {} · roots reach {} of the groundwater",
+                        pct(self.reserve[i] as f64),
+                        pct(bell),
+                        pct(self.root_depth(i, tick))
+                    ));
+                    out.push(format!(
+                        "Tree water {} · waterlogged {} of {:.0} tolerable ticks",
+                        pct(self.tree_water(i, tick)),
+                        self.soaked[i],
+                        tr.flood_days
+                    ));
+                }
+                let load = self.pest[i] as f64 / 255.0;
+                if load > 0.0 {
+                    out.push(format!("Pest outbreak: load {}", pct(load)));
+                }
+                let [vigor, hardy] = self.genome[i];
+                out.push(format!("Genome: vigor {vigor:.2} · hardiness {hardy:.2}"));
+            }
+            Cell::Grass => {
+                let k = self.grass_kind(i);
+                out.push(format!(
+                    "{} — age {} · niche fit {} · grazing {}",
+                    k.traits().name,
+                    self.age(i, tick),
+                    pct(self.grass_fit_raw(k as usize, i)),
+                    pct(self.grazing_intensity(i))
+                ));
+            }
+            Cell::Bare => {
+                if !self.channel[i] {
+                    // Which tree would take here, and how readily.
+                    let light = self.canopy_light(i);
+                    let mut best = (0.0, "none");
+                    for k in 0..SPECIES_COUNT {
+                        let e = self.tree_establishment(i, k, light);
+                        if e > best.0 {
+                            best = (e, SPECIES_TABLE[k].name);
+                        }
+                    }
+                    out.push(format!("Bare ground — best tree site: {} ({:.2})", best.1, best.0));
+                }
+            }
+        }
+        if let Some(rm) = self.remains(i) {
+            if rm.tree {
+                out.push(format!("Standing dead {} — died of {}", rm.species.traits().name, rm.cause.name()));
+            }
+        }
+        if self.inundated(i) {
+            out.push("Under floodwater".to_string());
+        } else if self.sediment[i] > 0 {
+            out.push("Fresh flood sediment (a seedbed for willow)".to_string());
+        }
+        out.join("\n")
+    }
+
+    /// Tally a tree death and stamp its cause on the husk it leaves.
+    fn record_death(&mut self, i: usize, cause: DeathCause) {
+        if self.state[i] != Cell::Tree {
+            return;
+        }
+        self.remains_cause[i] = cause as u8;
+        self.deaths_total[cause as usize] += 1;
+        self.deaths_recent[cause as usize] += 1.0;
+    }
+
+    /// Carbon economy of every tree (physiology): photosynthetic income
+    /// limited by the scarcest of light, temperature, and water (Liebig),
+    /// minus maintenance respiration that climbs with heat above the
+    /// species' optimum (Q10) and with pest load. Oaks pay for mast crops.
+    /// Also tracks waterlogging duration for flood tolerance.
+    fn carbon_pass(&mut self, tick: u64) {
+        let phys = self.params.physiology;
+        for r in self.deaths_recent.iter_mut() {
+            *r *= DEATH_RECENT_KEEP;
+        }
+        if phys <= 0.0 {
+            return;
+        }
+        for i in 0..self.grid.cells() {
+            if self.state[i] != Cell::Tree {
+                continue;
+            }
+            let tr = self.species(i).traits();
+            let mature = self.is_mature(i, tick);
+            let light = if mature {
+                1.0 / (1.0 + CROWD_LIGHT * self.mature_nbrs[i] as f64)
+            } else {
+                let l = self.canopy_light(i);
+                l + tr.shade_tolerance * (1.0 - l)
+            };
+            let temp = self.temperature(i);
+            let bell = (-((temp - tr.temp_opt) / (tr.temp_width * 1.4)).powi(2)).exp();
+            let water = (self.tree_water(i, tick) / WATER_SUFFICIENT).min(1.0);
+            let income = CARBON_GAIN * light * bell * water.powf(tr.drought_sensitivity);
+            let load = self.pest[i] as f64 / 255.0;
+            // Respiration acclimates to the site's climate (the damped
+            // niche temperature), not to every hot or cold year.
+            let site = self.niche_site(i).0;
+            let size = if mature { 1.0 } else { SAPLING_COST };
+            let cost = CARBON_COST * size * Q10.powf((site - tr.temp_opt) / Q10_STEP) * (1.0 + load);
+            let mut delta = (income - cost) * phys;
+            if tr.jay_cached && mature && self.mast {
+                delta -= MAST_COST * phys;
+            }
+            self.reserve[i] = (self.reserve[i] as f64 + delta).clamp(0.0, 1.0) as f32;
+            // Flood-tolerant roots only count permanently saturated ground
+            // (or a flood) against them; others any waterlogged soil.
+            let limit = if tr.flood_tolerant { ANOXIA_LEVEL } else { SOAK_LEVEL };
+            let soaking = self.inundated(i) || self.water_table(i) as f64 > limit;
+            self.soaked[i] = if soaking { self.soaked[i].saturating_add(1) } else { self.soaked[i].saturating_sub(2) };
+        }
+    }
+
     /// Root water competition on this tile: adjacent mature trees drawing
     /// down soil that is drier than typical (0 on moist ground).
     fn root_water_stress(&self, index: usize) -> f64 {
@@ -2708,7 +3438,9 @@ impl World {
         SiteCtx {
             adults: self.adults_near[i].iter().map(|&a| a as u32).sum(),
             fert,
-            base: fert * (0.4 + 1.2 * self.temperature(i)),
+            // Heat helps seedlings only in the old monotonic model; with
+            // physiology the species' own thermal bell (below) decides.
+            base: fert * (1.0 + (1.0 - p.physiology) * (0.4 + 1.2 * self.temperature(i) - 1.0)),
             water_base: 0.3 + 1.4 * water,
             sod: if self.state[i] == Cell::Grass {
                 Some(p.sod_factor * self.gmul(self.grass_kind(i).traits().sod))
@@ -2838,10 +3570,7 @@ impl World {
             // canopy. It gates BOTH understories — grass, and tree seedlings
             // (gap-phase regeneration: recruitment happens in openings and at
             // edges, never under a closed canopy).
-            let light = match self.tree_dist[i] {
-                255 => 1.0,
-                d => 1.0 - p.shade_strength * shade_suppression(d),
-            };
+            let light = self.canopy_light(i);
             // Vigor components, each calibrated to 1 at the neutral climate
             // (0.5/0.5) with baseline soil. Species bend the water response
             // via an exponent, and the light gate via shade tolerance.
@@ -2993,6 +3722,7 @@ impl World {
         self.root_pass(tick);
         self.dispersal_pass(tick);
         self.pest_pass(tick);
+        self.carbon_pass(tick);
         self.browse_pass(tick);
         self.fire_pass(tick);
         self.death_pass(tick);
@@ -3537,6 +4267,9 @@ mod tests {
             climate_zones: 2.0,
             rivers: f64::NAN,
             grazing: -0.5,
+            physiology: 4.0,
+            seasons: f64::NEG_INFINITY,
+            cloud_dynamics: -3.0,
             seed_tree_p: f64::NAN,
             seed_grass_p: 0.5,
             width: 3,
@@ -3548,6 +4281,8 @@ mod tests {
         assert_eq!(p.browse, 0.0);
         assert_eq!(p.competition, COMPETITION);
         assert_eq!((p.climate_zones, p.rivers, p.grazing), (1.0, RIVERS, 0.0));
+        assert_eq!((p.physiology, p.seasons), (1.0, SEASONS));
+        assert_eq!(p.cloud_dynamics, 0.0);
         assert_eq!(p.grass_seed_p, 1.0);
         assert_eq!(p.grass_clonal_p, 0.0);
         assert_eq!(p.shade_strength, 1.0);
@@ -4800,6 +5535,274 @@ mod tests {
         assert!(oak > acacia * 3, "oaks browsed {oak} vs acacias {acacia}");
         let scarred = (0..1200).step_by(2).find(|&i| w.state(i) == Cell::Tree && w.browse_damage(i) > 0.0).unwrap();
         assert!(w.maturity_age(scarred) > w.maturity_age(2048), "browsing should delay maturity");
+    }
+
+    /// Lab world with physiology (and seasons) switched on.
+    fn physio() -> Params {
+        Params { physiology: 1.0, seasons: 1.0, ..no_fire() }
+    }
+
+    #[test]
+    fn a_sapling_in_deep_shade_starves_while_one_in_the_open_thrives() {
+        // Same species, same site, same start: shade tolerance 0 pine.
+        let mut w = bare_world(12, Params { tree_growth_p: 0.0, tree_mean_life: 100_000, crowding_p: 0.0, ..physio() });
+        let (c, q, r) = center();
+        // A ring of mature evergreen pines around the shaded sapling (a
+        // deciduous ring would let spring light through).
+        for (dq, dr) in hex::NEIGHBORS {
+            let j = G.axial_to_index(q + dq, r + dr).unwrap();
+            w.paint_species(j, Brush::Tree, Species::Pine, 0);
+        }
+        let open = G.axial_to_index(q + 20, r).unwrap();
+        for tick in 200..230 {
+            if tick == 200 {
+                w.paint_species(c, Brush::Tree, Species::Pine, tick);
+                w.paint_species(open, Brush::Tree, Species::Pine, tick);
+            }
+            w.step(tick);
+        }
+        let (shaded, lit) = (w.reserve(c), w.reserve(open));
+        assert!(shaded < 0.2 && lit > 0.6, "shaded {shaded:.2} vs open {lit:.2}");
+    }
+
+    #[test]
+    fn heat_above_a_species_optimum_raises_its_upkeep() {
+        // Q10 respiration: the same pine loses carbon faster on a hot site.
+        let run = |sun: f64| {
+            let mut w = bare_world(13, Params { tree_growth_p: 0.0, tree_mean_life: 100_000, ..physio() });
+            let (c, _, _) = center();
+            w.paint_species(c, Brush::Tree, Species::Pine, 0);
+            w.reserve[c] = 0.5;
+            w.sun = sun;
+            w.carbon_pass(100);
+            w.reserve[c]
+        };
+        // carbon_pass reads the site temperature through niche_site, which
+        // follows the (damped) climate sun.
+        assert!(run(0.9) < run(0.5), "hot upkeep should cut the reserve more");
+    }
+
+    #[test]
+    fn roots_deepen_with_age_and_old_trees_drink_the_groundwater() {
+        let mut w = World::with_params(7, Params { water_table: 1.0, ..physio() });
+        let wet = (0..CELLS).find(|&i| (0.4..0.8).contains(&w.water_table(i)) && !w.is_channel(i)).unwrap();
+        w.paint(wet, Brush::Clear, 0);
+        w.paint_species(wet, Brush::Tree, Species::Oak, 0);
+        let (young, old) = (w.root_depth(wet, 1), w.root_depth(wet, 200));
+        assert!(young < 0.1 && old > 0.8, "root depth {young:.2} → {old:.2}");
+        assert!(w.tree_water(wet, 200) > w.tree_water(wet, 1) + 0.05);
+        // And a shallow-rooted willow taps less of it than an oak.
+        assert!(Species::Willow.traits().taproot < Species::Oak.traits().taproot);
+    }
+
+    #[test]
+    fn flood_tolerance_is_a_matter_of_duration() {
+        // Only waterlogging longer than the species tolerates counts.
+        let mut w = bare_world(14, Params { tree_growth_p: 0.0, ..physio() });
+        let (c, _, _) = center();
+        w.paint_species(c, Brush::Tree, Species::Pine, 0);
+        let pine_days = Species::Pine.traits().flood_days as u8;
+        w.soaked[c] = pine_days; // at the limit: no rot yet
+        assert!(w.soaked[c] as f64 <= Species::Pine.traits().flood_days);
+        assert!(Species::Willow.traits().flood_days > 10.0 * Species::Pine.traits().flood_days);
+        // Drained ground dries a tree out again.
+        w.carbon_pass(10);
+        assert!(w.soaked[c] < pine_days);
+    }
+
+    #[test]
+    fn deaths_carry_their_cause() {
+        // Fire: a torched sapling's husk says fire; the HUD tally agrees.
+        let p = Params { fire_spread_p: 0.0, ..physio() };
+        let mut w = bare_world(15, p);
+        let (c, _, _) = center();
+        w.paint_species(c, Brush::Tree, Species::Pine, 100);
+        w.paint(c, Brush::Fire, 101);
+        for tick in 101..110 {
+            w.step(tick);
+        }
+        let husk = w.remains(c).expect("a charred husk");
+        assert_eq!(husk.cause, DeathCause::Fire);
+        assert!(w.deaths_total()[DeathCause::Fire as usize] >= 1);
+        assert!(w.deaths_recent()[DeathCause::Fire as usize] > 0.5);
+    }
+
+    #[test]
+    fn starving_pines_draw_bark_beetles() {
+        // Outbreak seeding climbs as the host's reserve empties.
+        let strength = |reserve: f32| {
+            let mut w = bare_world(16, Params { pest_strength: 1.0, tree_growth_p: 0.0, ..physio() });
+            let (_, q, r) = center();
+            let mut block = Vec::new();
+            for dq in -3..=3 {
+                for dr in -3..=3 {
+                    if let Some(i) = G.axial_to_index(q + dq, r + dr) {
+                        w.paint_species(i, Brush::Tree, Species::Pine, 0);
+                        block.push(i);
+                    }
+                }
+            }
+            let mut infested = 0;
+            for tick in 200..400 {
+                for &i in &block {
+                    if w.state(i) == Cell::Tree {
+                        w.reserve[i] = reserve;
+                    }
+                }
+                w.rebuild_fields(tick);
+                w.pest_pass(tick);
+                infested += block.iter().filter(|&&i| w.pest[i] > 0).count();
+                for &i in &block {
+                    w.pest[i] = 0;
+                }
+            }
+            infested
+        };
+        let (fed, starved) = (strength(1.0), strength(0.0));
+        assert!(starved > fed * 3, "starved hosts {starved} vs fed {fed}");
+    }
+
+    #[test]
+    fn deciduous_canopies_let_spring_light_through() {
+        let light_beside = |sp: Species, seasons: f64| {
+            let mut w = bare_world(17, Params { seasons, ..physio() });
+            let (c, q, r) = center();
+            w.paint_species(c, Brush::Tree, sp, 0);
+            w.rebuild_fields(500);
+            w.canopy_light(G.axial_to_index(q + 2, r).unwrap())
+        };
+        assert!(light_beside(Species::Oak, 1.0) > light_beside(Species::Pine, 1.0) + 0.1);
+        assert_eq!(light_beside(Species::Oak, 0.0), light_beside(Species::Pine, 0.0));
+    }
+
+    #[test]
+    fn mast_years_never_come_back_to_back() {
+        let w = World::with_params(18, physio());
+        let masts: Vec<bool> = (0..2_000u64).map(|t| w.mast_at(t)).collect();
+        assert!(masts.windows(2).all(|p| !(p[0] && p[1])), "a mast year exhausts the trees");
+        let share = masts.iter().filter(|&&m| m).count() as f64 / masts.len() as f64;
+        assert!((0.15..0.45).contains(&share), "a mast every ~2–5 years, saw {share:.2}");
+    }
+
+    #[test]
+    fn the_inspector_explains_a_tile() {
+        let mut w = bare_world(19, physio());
+        let (c, _, _) = center();
+        w.paint_species(c, Brush::Tree, Species::Oak, 0);
+        w.step(50);
+        let text = w.inspect(c, 50);
+        assert!(text.contains("Oak") && text.contains("Carbon reserve") && text.contains("°C"), "{text}");
+    }
+
+    /// A lab world with dynamic clouds and nothing else going on.
+    fn cloudy(dynamics: f64) -> World {
+        let mut w = bare_world(40, Params { cloud_dynamics: dynamics, storm_rate: 0.0, ..no_fire() });
+        w.moisture = 0.5;
+        w.sun = 0.6;
+        w
+    }
+
+    /// Put one cloud of `kind` over the map center with `water`.
+    fn one_cloud(w: &mut World, kind: CloudKind, water: f64) {
+        let (x, y) = G.center(G.middle());
+        w.spawn_cloud(kind, [x, y], 5.0, 1);
+        let c = w.storms.last_mut().unwrap();
+        c.water = water;
+        c.vel = [0.2, 0.0];
+    }
+
+    #[test]
+    fn a_well_fed_cumulus_towers_into_a_thunderhead_that_rains_out_into_anvil_cirrus() {
+        let mut w = cloudy(1.0);
+        one_cloud(&mut w, CloudKind::Cumulus, 0.9);
+        w.cloud_life(10);
+        assert_eq!(w.storms[0].kind, CloudKind::Cumulonimbus);
+        assert_eq!(w.storms[0].from, CloudKind::Cumulus);
+        assert!(w.storms[0].morph < 0.1, "the new form grows in gradually");
+        // Raining drains it; spent, it collapses and leaves its anvil.
+        w.storms[0].water = CB_SPENT - 0.01;
+        w.cloud_life(11);
+        assert_eq!(w.storms[0].kind, CloudKind::Cirrus);
+        let ev = w.cloud_events();
+        assert_eq!((ev[CloudEvent::Towered as usize], ev[CloudEvent::Collapsed as usize]), (1, 1));
+    }
+
+    #[test]
+    fn a_front_thickens_cirrus_into_rain_that_breaks_up_into_fair_weather_cumulus() {
+        let mut w = cloudy(1.0);
+        one_cloud(&mut w, CloudKind::Cirrus, FRONT_WATER + 0.05);
+        w.cloud_life(10);
+        assert_eq!(w.storms[0].kind, CloudKind::Nimbostratus);
+        w.storms[0].water = NS_SPENT - 0.01;
+        w.cloud_life(11);
+        assert_eq!(w.storms[0].kind, CloudKind::Cumulus);
+    }
+
+    #[test]
+    fn dry_clouds_evaporate_and_moist_ground_feeds_them() {
+        let mut w = cloudy(1.0);
+        one_cloud(&mut w, CloudKind::Cumulus, 0.01);
+        w.moisture = 0.0;
+        w.sun = 0.9;
+        for t in 10..20 {
+            w.cloud_life(t);
+        }
+        assert!(w.storms.is_empty(), "a small cumulus over hot dry ground evaporates");
+        assert!(w.cloud_events()[CloudEvent::Evaporated as usize] >= 1);
+        let mut wet = cloudy(1.0);
+        one_cloud(&mut wet, CloudKind::Cumulus, 0.3);
+        wet.moisture = 1.0;
+        let before = wet.storms[0].water;
+        wet.cloud_life(10);
+        assert!(wet.storms[0].water > before, "evaporation from moist ground feeds it");
+    }
+
+    #[test]
+    fn windward_slopes_lift_clouds_and_lee_slopes_dry_them() {
+        let w = World::with_params(7, Params { climate_zones: 1.0, ..physio() });
+        // Find a steep slope along +x.
+        let (best, slope) = (0..CELLS)
+            .map(|i| {
+                let (x, y) = G.center(i);
+                (i, w.slope_along(x, y, [1.0, 0.0]))
+            })
+            .max_by(|a, b| a.1.total_cmp(&b.1))
+            .unwrap();
+        assert!(slope > OROG_SLOPE, "the test map has windward slopes ({slope:.3})");
+        let (x, y) = G.center(best);
+        assert!((w.slope_along(x, y, [-1.0, 0.0]) + slope).abs() < 1e-9, "lee is the mirror");
+        let climbing = Storm { kind: CloudKind::Cumulus, pos: [x, y], vel: [0.3, 0.0], radius: 4.0, spawned: 0, water: 0.6, from: CloudKind::Cumulus, morph: 1.0 };
+        assert!(w.orographic_rain(&climbing), "forced up the ridge, a moist cloud rains");
+        let sinking = Storm { vel: [-0.3, 0.0], ..climbing };
+        assert!(!w.orographic_rain(&sinking), "on the lee it doesn't");
+        let thin = Storm { kind: CloudKind::Cirrus, ..climbing };
+        assert!(!w.orographic_rain(&thin), "thin cirrus never does");
+    }
+
+    #[test]
+    fn warm_moist_ground_bubbles_up_new_cumulus_only_with_dynamics() {
+        let run = |dynamics: f64| {
+            let mut w = bare_world(41, Params { cloud_dynamics: dynamics, storm_rate: 0.05, ..no_fire() });
+            w.moisture = 0.9;
+            w.sun = 0.8;
+            for t in 1..400 {
+                w.cloud_life(t);
+            }
+            w.cloud_events()[CloudEvent::Formed as usize]
+        };
+        assert!(run(1.0) > 0);
+        assert_eq!(run(0.0), 0);
+    }
+
+    #[test]
+    fn static_clouds_never_change() {
+        let mut w = cloudy(0.0);
+        one_cloud(&mut w, CloudKind::Cumulus, 0.95);
+        for t in 10..60 {
+            w.cloud_life(t);
+        }
+        assert_eq!(w.storms[0].kind, CloudKind::Cumulus);
+        assert_eq!(w.storms[0].water, 0.95);
     }
 
 }

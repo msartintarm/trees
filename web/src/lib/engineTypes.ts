@@ -42,6 +42,9 @@ export type Sim = {
     climateZones: number,
     rivers: number,
     grazing: number,
+    physiology: number,
+    seasons: number,
+    cloudDynamics: number,
     seedTreeP: number,
     seedGrassP: number,
     width: number,
@@ -69,20 +72,16 @@ export type Sim = {
   eye(): Float32Array;
   pick_tile(bx: number, by: number): number;
   paint_at(bx: number, by: number, brush: number, species: number, grass: number): number;
-  ground_instances(): Uint8Array;
-  ground_instance_count(): number;
-  tree_instances(species: number): Uint8Array;
-  tree_instance_count(species: number): number;
-  grass_instances(kind: number): Uint8Array;
-  grass_instance_count(kind: number): number;
-  mushroom_instances(): Uint8Array;
-  mushroom_instance_count(): number;
-  cloud_instances(): Uint8Array;
-  cloud_instance_count(): number;
-  sheet_instances(): Uint8Array;
-  sheet_instance_count(): number;
-  bolt_instances(): Uint8Array;
-  bolt_instance_count(): number;
+  prepare_frame(): void;
+  frame_bytes(): Uint8Array;
+  frame_counts(): Uint32Array;
+  heat(): number;
+  set_roots_view(on: boolean): void;
+  roots_view(): boolean;
+  inspect_at(bx: number, by: number): string;
+  deaths_recent(): Float32Array;
+  cloud_counts(): Uint32Array;
+  cloud_events(): Uint32Array;
 };
 
 export type Renderer = {
@@ -94,34 +93,12 @@ export type Renderer = {
     viewProj: Float32Array,
     alpha: number,
     light: number,
+    heat: number,
     eye: Float32Array,
     lightVp: Float32Array,
-    ground: Uint8Array,
-    groundN: number,
-    acacia: Uint8Array,
-    acaciaN: number,
-    oak: Uint8Array,
-    oakN: number,
-    pine: Uint8Array,
-    pineN: number,
-    willow: Uint8Array,
-    willowN: number,
-    bunch: Uint8Array,
-    bunchN: number,
-    sod: Uint8Array,
-    sodN: number,
-    sedge: Uint8Array,
-    sedgeN: number,
-    annual: Uint8Array,
-    annualN: number,
-    mushrooms: Uint8Array,
-    mushroomsN: number,
-    clouds: Uint8Array,
-    cloudsN: number,
-    sheets: Uint8Array,
-    sheetsN: number,
-    bolts: Uint8Array,
-    boltsN: number,
+    bytes: Uint8Array,
+    counts: Uint32Array,
+    rootsView: boolean,
   ): void;
 };
 

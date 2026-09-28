@@ -1,14 +1,15 @@
 // Pure snapshot→string formatting for the HUD, kept out of the component so
 // the exact readout is unit-tested.
 
-import type { StatsSnapshot } from "./protocol.ts";
+import { CLOUD_EVENTS, DEATH_CAUSES, type StatsSnapshot } from "./protocol.ts";
 
 function group(n: number): string {
   return Math.floor(n).toLocaleString("en-US");
 }
 
 function fmtSpeed(v: number): string {
-  return v === Math.floor(v) ? String(v) : v.toFixed(1);
+  if (v === Math.floor(v)) return String(v);
+  return v < 0.1 ? v.toFixed(2) : v.toFixed(1);
 }
 
 export function speedLabel(s: StatsSnapshot): string {
@@ -27,6 +28,45 @@ export function speedLabel(s: StatsSnapshot): string {
  * regions differ. */
 export function diversityLabel(s: StatsSnapshot): string {
   return `🌿 ${s.diversity.toFixed(1)} types (local ${s.localDiversity.toFixed(1)})`;
+}
+
+/** The sky by genus, e.g. "☁ 6 cumulus · 3 thunderheads · 2 rain sheets ·
+ * 1 cirrus" (only genera present); empty under a clear sky. */
+export function cloudsText(s: StatsSnapshot): string {
+  const names = [
+    ["cumulus", "cumulus"],
+    ["thunderhead", "thunderheads"],
+    ["rain sheet", "rain sheets"],
+    ["cirrus", "cirrus"],
+  ];
+  const parts = s.clouds
+    .map((n, k) => (n > 0 ? `${n} ${n === 1 ? names[k][0] : names[k][1]}` : ""))
+    .filter((x) => x);
+  return parts.length ? `☁ ${parts.join(" · ")}` : "";
+}
+
+/** The newest cloud transition between two snapshots' event tallies (the
+ * weather ticker), or null if nothing noteworthy happened. Evaporation is
+ * too routine to announce. */
+export function newestCloudEvent(prev: number[] | null, next: number[]): string | null {
+  if (!prev) return null;
+  let found: string | null = null;
+  next.forEach((n, k) => {
+    if (n > (prev[k] ?? 0) && k !== 5) found = CLOUD_EVENTS[k] ?? null;
+  });
+  return found;
+}
+
+/** The leading causes of recent tree deaths (up to three), e.g.
+ * "☠ pests 12 · drought 5 · fire 3" — empty when nothing is dying. */
+export function deathsText(s: StatsSnapshot): string {
+  const top = s.deathsRecent
+    .map((n, k) => ({ n, cause: DEATH_CAUSES[k] ?? "?" }))
+    .filter((d) => d.n >= 0.5)
+    .sort((a, b) => b.n - a.n)
+    .slice(0, 3);
+  if (top.length === 0) return "";
+  return `☠ ${top.map((d) => `${d.cause} ${Math.round(d.n)}`).join(" · ")}`;
 }
 
 export function statsText(s: StatsSnapshot): string {
