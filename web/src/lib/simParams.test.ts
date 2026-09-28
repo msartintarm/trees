@@ -90,6 +90,19 @@ test("the regime presets differ along the measured axes", () => {
   assert.equal(by["defaults"].terrain, 1, "the default world has relief");
   assert.equal(by["flat-plain"].terrain, 0, "the flat plain is the no-niche baseline");
   assert.equal(by["flat-plain"].grassNiches, 0);
+  assert.equal(by["flat-plain"].rivers, 0);
+  assert.equal(by["flat-plain"].climateZones, 0);
+});
+
+test("the oak presets relax what the sweep found limits oak", () => {
+  const by = Object.fromEntries(PRESETS.map((p) => [p.key, p.params]));
+  for (const key of ["oak-woodland", "oak-mosaic"]) {
+    const p = by[key];
+    assert.ok(p.treeGrowthP > by["defaults"].treeGrowthP, `${key}: oak is recruitment-limited`);
+    assert.ok(p.pestStrength < 1 && p.browse < 1, `${key}: fewer oak-wilt outbreaks and deer`);
+    assert.ok(p.grazing > 0, `${key}: grazers keep the sod open (wood pasture)`);
+  }
+  assert.ok(by["oak-woodland"].treeGrowthP > by["oak-mosaic"].treeGrowthP, "the woodland recruits hardest");
 });
 
 test("presets keep the map size and still match on a custom-sized map", () => {

@@ -252,13 +252,16 @@ pub const LAPSE: f64 = 0.5;
 pub const RAIN_GRADIENT: f64 = 0.5;
 /// Frost: below this temperature index, frost-tender trees establish less
 /// and die more (scaled by 1 − cold_hardiness).
-pub const FROST_T: f64 = 0.3;
+pub const FROST_T: f64 = 0.4;
 pub const FROST_HAZARD: f64 = 3.0;
 /// Treeline: no tree establishes below TREELINE_T; full recruitment above
-/// TREELINE_T + TREELINE_BAND. Snow shows on the ground below SNOW_T.
+/// TREELINE_T + TREELINE_BAND. Snow lies where the snowline temperature
+/// (altitude, half the slope aspect, a damped climate swing) is below
+/// SNOW_T, fading in over SNOW_BAND.
 pub const TREELINE_T: f64 = 0.1;
 pub const TREELINE_BAND: f64 = 0.08;
-pub const SNOW_T: f64 = 0.13;
+pub const SNOW_T: f64 = 0.24;
+pub const SNOW_BAND: f64 = 0.06;
 /// Soil thinning at the highest altitude (fraction of depth lost).
 pub const MONTANE_THIN: f64 = 0.35;
 /// Upstream drainage area (tiles) at which a channel forms (÷ rivers).
@@ -1303,6 +1306,19 @@ impl World {
     pub fn temperature(&self, index: usize) -> f64 {
         let aspect = (self.terrain.heat[index] as f64 - 0.5) * 1.0 * self.params.terrain;
         (self.sun + aspect + self.lapse(index)).clamp(0.02, 0.98)
+    }
+
+    /// Snow cover on a tile, 0..1: the snowline follows altitude (and runs
+    /// lower on shaded slopes), creeping down in cold years — the weather
+    /// swing is damped like the niche climate so the snowline doesn't
+    /// flicker across the lowlands.
+    pub fn snow_cover(&self, index: usize) -> f32 {
+        if self.params.climate_zones <= 0.0 {
+            return 0.0;
+        }
+        let aspect = (self.terrain.heat[index] as f64 - 0.5) * 0.5 * self.params.terrain;
+        let t = 0.5 + (self.sun - 0.5) * NICHE_CLIMATE + self.lapse(index) + aspect;
+        ((SNOW_T - t) / SNOW_BAND).clamp(0.0, 1.0) as f32
     }
 
     /// Frost stress for a species on a tile, 0..1 (0 when warm enough or
@@ -4656,7 +4672,9 @@ mod tests {
             let (u, a) = (rng::uniform01(1, k as u32, 0, Stream::Jay), rng::uniform01(2, k as u32, 0, Stream::Jay));
             if let Some(t) = w.ldd_target(c, u, a) {
                 let (q, r) = g.index_to_axial(t);
-                assert!(hex::distance(q, r, cq, cr) as f64 <= cap + 1.5, "seed landed past the cap");
+                // The cap is Euclidean (in tile spacings); hex step counts
+                // run up to 2/√3 longer along the diagonals.
+                assert!(hex::distance(q, r, cq, cr) as f64 <= cap * 1.155 + 1.5, "seed landed past the cap");
             }
         }
     }

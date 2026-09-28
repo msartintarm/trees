@@ -80,14 +80,26 @@ export const PRESETS: Preset[] = [
   {
     key: "defaults",
     label: "Savanna parkland",
-    hint: "~4.5 effective plant types (~10% tree cover, ~40% grass): pine ridges, oak mid-slopes, acacia on sunny slopes, willow & sedge valleys, sod on shady slopes",
+    hint: "climate zones from lowland acacia & bunchgrass savanna up through pine to alpine meadow, willows along the rivers (~4.3–5 effective types; oak scarce)",
     params: DEFAULT_PARAMS,
+  },
+  {
+    key: "oak-woodland",
+    label: "Oak woodland",
+    hint: "where oak thrives most (~18% of the map, ~⅔ of the trees): fast recruitment, few oak-wilt outbreaks and deer, grazers keeping the sod open for acorns (wood pasture)",
+    params: { ...DEFAULT_PARAMS, treeGrowthP: 0.01, pestStrength: 0.3, browse: 0.3, competition: 0.5 },
+  },
+  {
+    key: "oak-mosaic",
+    label: "Oak mosaic",
+    hint: "oak strong (~7% of the map, ~40% of the trees) alongside everything else — the most diverse mix measured (~4.7 effective types)",
+    params: { ...DEFAULT_PARAMS, treeGrowthP: 0.005, pestStrength: 0.3, browse: 0.3, competition: 0.5 },
   },
   {
     key: "flat-plain",
     label: "Flat plain",
-    hint: "no relief, one generic grass: nothing to sort by, ~2.2 effective types",
-    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0 },
+    hint: "no relief, rivers, climate zones, grazers, or grass types: nothing to sort by (~2.5 effective types)",
+    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0 },
   },
   {
     key: "moist-forest",

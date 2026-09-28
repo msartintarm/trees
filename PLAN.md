@@ -319,6 +319,29 @@ tick is ~115 ns/tile spread evenly across passes — 32× on 256² is
 CPU-bound; a profiler-guided pass (or a worker-parallel tick) is the next
 lever.
 
+## P25 — Climate zones, rivers & floods, grazing, bounded dispersal ✅
+Probe first (`examples/area_probe.rs`): the big map gave insurance (no
+extinctions) but not more diversity — the fixed-scale hills just tiled.
+Added map-scale altitude (range ∝ map size) with a lapse rate, regional
+rain, frost/treeline/montane soils; priority-flood drainage → river
+channels, riparian corridors, flood pulses laying sediment; willow's
+recruitment box, anoxia in saturated marsh, halved resprouting, riparian
+browsing; grazing piospheres. Result (256², seed 7): γ 4.12 → 5.25, β
+1.35 → 1.77, willow from a 3.1 % wet-ground blanket to a 1.0 % river band.
+User then spotted pine/acacia exploding across the map: measured it
+(`spread_probe`: 19 founders → 7,552 pines, front at the map edge) — the
+uniform map-wide long-distance seed, sane at 64² (~640 m) but 2.5 km at
+256². Replaced by per-species truncated 2Dt kernels from field dispersal
+data plus a size-dependent fecundity ramp: 550 pines, front ~48 tiles by
+t=4000. Oak: user suggested presets; `oak_presets` sweep (48 combos, all
+cores) found oak recruitment-limited, held back by pests and deer, helped
+by grazing → Oak woodland and Oak mosaic presets. Legacy tests re-pinned
+(slower recruitment); new `tests/landscape.rs` (zonation, rivers, floods,
+willow band, diversity, grazing, bounded spread). Snowline uses a damped
+climate so cold years don't blanket the lowlands.
+Known: oak stays scarce under default pressures; small maps sort acacia
+by temperature rather than excluding it from their modest heights.
+
 ## Ideas / not done
 - True speciation: reproductive isolation between diverged lineages (currently traits blend freely)
 - Pioneer persistence in closed forests (gap dynamics beyond windthrow)

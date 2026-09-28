@@ -14,6 +14,10 @@ is a `Params` field, live-editable in the panel:
 | Rule | Mechanism |
 | --- | --- |
 | Grid | pointy-top hexes (odd-r offset) raised into terrain columns; **256×256 by default** (65,536 tiles), any size 8–512 per side via *Map width / height* in the panel (applies on Reseed; the camera re-frames). Rates are per tile, so densities and regimes are size-independent; cloud spawning scales with the map's linear size so cloud cover per area holds. The shadow map follows the camera, so shadows stay sharp on any map |
+| Climate zones | map-scale mountains (`climate_zones`) whose altitude range grows with the map (gentle on 64², full on 256²+): temperature falls with altitude (lapse rate), a regional rain field (wetter on the mountains), frost limits per species (acacia tender … pine hardy), a treeline, thinner montane soils, and a snowline that creeps down in cold years. Result on 256²: warm lowland acacia & bunchgrass savanna → pine belt → alpine sod & sedge meadow |
+| Rivers & floods | a drainage network from priority-flood routing (Barnes et al. 2014): tiles draining ≥ 350 upstream tiles become open-water channels (nothing roots, fire can't cross) with wet riparian corridors; wet seasons flood the floodplains, scour grass and seedlings, and leave sediment bars. Willow follows the real **recruitment box** — it recruits only on bare, freshly flooded sediment — suffocates in permanently saturated marsh (sedge takes it), resprouts less, and is browsed by riparian herbivores: a band along the rivers instead of a blanket |
+| Grazing | herbivores crop palatable grass (sod ≫ annuals > sedge, bunchgrass), heaviest near water (piospheres); grazed swards render short. Keeps sod from blanketing the map and holds the sod mat open for big seeds (wood pasture) |
+| Dispersal limits | long-distance seed follows a truncated fat-tailed 2Dt kernel per species (Clark et al. 1999; tile ≈ 10 m): pine ~50 m typical / 600 m cap, oak (jays) ~80 m / 400 m, acacia (ungulates) ~60 m / 400 m, willow ~100 m / 800 m. Seed output grows with tree size (15 % of a full crop at maturity → 100 % at 3× maturity age), so invasions advance as fronts instead of exploding across the map |
 | Terrain | one seeded fractal elevation field (`sim/terrain.rs`) with everything derived from it: **catena** groundwater (valley bottoms saturate, ridges drain), **aspect heat** (sun-facing slopes hot and dry, shaded slopes cool), and **soil depth** (thin and rocky on ridges and steep slopes, deep in the bottoms). Rendered with a 2.5× vertical exaggeration; clicks pick by ray-marching the tile tops. `terrain` param = 0 gives the legacy flat world |
 | Grass functional types | four kinds (`world.rs::GRASS_TABLE`) with **unimodal** niche responses to site temperature × water (niche fit uses the terrain with only 35 % of the climate swing, so the map, not the weather, decides who lives where): **bunchgrass** (C4, hot dry slopes, drought-tolerant, flammable, resprouts after fire, gappy tussocks that let seedlings through), **sod grass** (C3, cool slopes, shade-tolerant, browns in drought, rhizome mat that blocks seedlings), **sedge** (saturated valley bottoms, flood-tolerant), **annuals** (short-lived colonizers that build a persistent soil **seed bank** and flush on burns and drought gaps; perennials overgrow them on undisturbed ground). Paint any kind with the grass picker. `grass_niches` = 0 gives one generic grass |
 | Tree niches | trees fit a thermal optimum (acacia hot, oak cool, pine and willow broad) and a **soil competitive hierarchy**: demanding species (oak) win deep soil, stress-tolerators (pine, acacia) keep the thin ridges. Oak and acacia saplings **resprout from the root crown** after fire (pine relies on serotiny) |
@@ -123,6 +127,9 @@ cargo run --release --example evolution_probe  # selection on heritable traits
 cargo run --release --example niche_probe      # where each type lives + diversity, flat vs terrain
 cargo run --release --example oak_probe        # tree composition per regime, each competition mechanism knocked out
 cargo run --release --example scale_probe      # tick/frame cost and densities at 64² … 512²
+cargo run --release --example landscape_probe -- 256 7 8000   # zonation, rivers, willow, α/β/γ diversity
+cargo run --release --example spread_probe -- 256 4000        # invasion front from one founding stand
+cargo run --release --example oak_presets -- 6000             # where oak thrives (sweep, all cores)
 
 Tests and probes run on the original 64×64 calibration map
 (`Params::legacy_map()`, `Grid::LEGACY`): all regime bands were measured
@@ -135,7 +142,9 @@ Preset dropdown (`simParams.ts::PRESETS`; reads Custom once you hand-edit):
 | Preset | Config | Long-run |
 | --- | --- | --- |
 | Savanna parkland (default) | tree growth 0.2 %, clonal 8 %, no base lightning, full relief + grass niches | ~4.8 effective types: pine on thin ridges, oak on deep mid-slopes, acacia on sunny slopes, willow + sedge in the valleys, sod on the shady slopes, bunchgrass and annuals on the hot open ground; grass ≈ 1,000–1,500, trees ≈ 550–900 |
-| Flat plain | defaults with terrain 0, grass niches 0 | the pre-terrain world: nothing to sort by, ~2.2 effective types |
+| Oak woodland | tree growth 1 %, pests 30 %, browsing 30 %, competition 50 %, grazing on | where oak thrives most: ~18 % of the map, ~⅔ of the trees (wood pasture) |
+| Oak mosaic | tree growth 0.5 %, pests 30 %, browsing 30 %, competition 50 %, grazing on | oak strong (~7 %, ~40 % of trees) inside the most diverse mix measured (~4.7 effective types) |
+| Flat plain | terrain, grass niches, climate zones, rivers, grazing all off | nothing to sort by, ~2.5 effective types |
 | Moist forest | tree growth 1 %, no base lightning | a **mixed forest** (~1,200 trees, ~4.4 effective types): oak leads late, but its seedlings fail beneath its own canopy and oak-wilt outbreaks sweep dense stands, so pine and willow hold the gaps (without neighbor competition it collapses to ~95 % oak) |
 | Fire-swept grassland | tree growth 0.1 %, lightning 0.05 % | the sward surges in wet years and burns in droughts; trees extinct |
 | Fire savanna | defaults + lightning 0.05 % | burns sweep the uplands into bunchgrass and annuals; the wet valleys don't carry fire, so riparian willow stands survive on every seed |

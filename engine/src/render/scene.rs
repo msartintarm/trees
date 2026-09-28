@@ -112,8 +112,6 @@ const RIVER: [f32; 3] = [0.14, 0.30, 0.44];
 const FLOODWATER: [f32; 3] = [0.30, 0.34, 0.34];
 const SAND: [f32; 3] = [0.66, 0.59, 0.43];
 const SNOW: [f32; 3] = [0.92, 0.94, 0.97];
-/// Snow shows below this temperature index (matches the sim's SNOW_T).
-const SNOW_T: f64 = crate::sim::world::SNOW_T;
 
 const MUSHROOM: [f32; 3] = [0.78, 0.52, 0.34];
 const MUSHROOM_ON_CHAR: [f32; 3] = [0.62, 0.58, 0.48];
@@ -242,9 +240,9 @@ pub fn build_instances(world: &World, tick: u64, alpha: f32) -> FrameInstances {
         if sand > 0.0 {
             ground = lerp3(ground, SAND, sand * 0.7);
         }
-        // Snow lies where the ground is cold (the high mountains, colder
-        // in cold years).
-        let snow = ((SNOW_T - world.temperature(i)) / 0.05).clamp(0.0, 1.0) as f32;
+        // Snow lies above the snowline: set by altitude, lower on shaded
+        // slopes, creeping down in cold years.
+        let snow = world.snow_cover(i);
         if snow > 0.0 {
             ground = lerp3(ground, SNOW, snow * 0.85);
         }
