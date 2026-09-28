@@ -2,14 +2,14 @@
 //! math — shared by the wasm bridge (which owns the camera) and native tests.
 //! Produces a WebGPU-clip-space (z ∈ [0, 1]) column-major view-projection.
 
-use crate::sim::hex;
+use crate::sim::hex::Grid;
 
 pub const FOV_Y: f64 = 45.0 * std::f64::consts::PI / 180.0;
 pub const NEAR: f64 = 0.5;
 pub const MIN_PITCH: f64 = 0.25;
 pub const MAX_PITCH: f64 = 1.45;
 pub const MIN_DISTANCE: f64 = 4.0;
-pub const MAX_DISTANCE: f64 = 500.0;
+pub const MAX_DISTANCE: f64 = 1500.0;
 
 #[derive(Clone, Debug)]
 pub struct Camera {
@@ -36,8 +36,8 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
 
 impl Camera {
     /// Camera fitted to the world grid, looking north from the south edge.
-    pub fn fit_world() -> Camera {
-        let (min_x, min_y, max_x, max_y) = hex::world_bounds();
+    pub fn fit_world(grid: Grid) -> Camera {
+        let (min_x, min_y, max_x, max_y) = grid.world_bounds();
         let span = (max_x - min_x).max(max_y - min_y);
         let mut cam = Camera {
             target: [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0],
@@ -171,16 +171,65 @@ impl Camera {
         let t = -eye[2] / dir[2];
         Some([eye[0] + t * dir[0], eye[1] + t * dir[1]])
     }
+
+    /// First point where a screen ray meets a height field (tile tops on
+    /// raised terrain): march down from `max_height` in small steps and
+    /// return the ground point under the first sample at or below the
+    /// surface. `height` answers None off the map.
+    pub fn pick_heightfield(
+        &self,
+        bx: f64,
+        by: f64,
+        max_height: f64,
+        height: impl Fn(f64, f64) -> Option<f64>,
+    ) -> Option<[f64; 2]> {
+        let (eye, dir) = self.screen_ray(bx, by);
+        if dir[2] >= -1e-9 {
+            return None;
+        }
+        // Enter the relief slab at its top, leave it at z = 0.
+        let t0 = ((eye[2] - max_height) / -dir[2]).max(0.0);
+        let t1 = eye[2] / -dir[2];
+        let step = 0.05;
+        let mut t = t0;
+        while t <= t1 + step {
+            let p = [eye[0] + t * dir[0], eye[1] + t * dir[1], eye[2] + t * dir[2]];
+            if let Some(h) = height(p[0], p[1]) {
+                if p[2] <= h {
+                    return Some([p[0], p[1]]);
+                }
+            }
+            t += step;
+        }
+        None
+    }
 }
 
-/// Orthographic sun view-projection covering the entire (static) world,
-/// for the shadow map. `sun` points from the surface toward the light.
-/// Column-major, WebGPU clip space (z in [0, 1]).
-pub fn light_view_proj(sun: [f32; 3]) -> [f32; 16] {
-    let (min_x, min_y, max_x, max_y) = hex::world_bounds();
-    let c = [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 1.5];
+impl Camera {
+    /// Ground rectangle the shadow map should cover: the region around the
+    /// camera target that is in view (generously), clipped to the world.
+    /// Zoomed out it is the whole map; zoomed in, the shadow map's texels
+    /// concentrate where the viewer is looking, at any map size.
+    pub fn shadow_bounds(&self, grid: Grid) -> (f64, f64, f64, f64) {
+        let (min_x, min_y, max_x, max_y) = grid.world_bounds();
+        let reach = self.distance * (1.2 + 1.5 * (MAX_PITCH - self.pitch));
+        (
+            (self.target[0] - reach).max(min_x),
+            (self.target[1] - reach).max(min_y),
+            (self.target[0] + reach).min(max_x),
+            (self.target[1] + reach).min(max_y),
+        )
+    }
+}
+
+/// Orthographic sun view-projection covering a ground rectangle (with
+/// terrain and canopy height), for the shadow map. `sun` points from the
+/// surface toward the light. Column-major, WebGPU clip space (z in [0, 1]).
+pub fn light_view_proj(sun: [f32; 3], bounds: (f64, f64, f64, f64)) -> [f32; 16] {
+    let (min_x, min_y, max_x, max_y) = bounds;
+    let c = [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 1.5 + crate::sim::terrain::RENDER_RELIEF / 2.0];
     let sun64 = normalize([sun[0] as f64, sun[1] as f64, sun[2] as f64]);
-    let dist = 90.0;
+    let dist = 90.0 + (max_x - min_x).max(max_y - min_y);
     let eye = [c[0] + sun64[0] * dist, c[1] + sun64[1] * dist, c[2] + sun64[2] * dist];
     let fwd = normalize([c[0] - eye[0], c[1] - eye[1], c[2] - eye[2]]);
     let s = normalize(cross(fwd, [0.0, 0.0, 1.0]));
@@ -189,7 +238,7 @@ pub fn light_view_proj(sun: [f32; 3]) -> [f32; 16] {
     let (mut lo, mut hi) = ([f64::INFINITY; 3], [f64::NEG_INFINITY; 3]);
     for &x in &[min_x - 2.0, max_x + 2.0] {
         for &y in &[min_y - 2.0, max_y + 2.0] {
-            for &z in &[-0.3, 5.0] {
+            for &z in &[-0.3, crate::sim::terrain::RENDER_RELIEF + 5.0] {
                 let d = [x - eye[0], y - eye[1], z - eye[2]];
                 let v = [dot(s, d), dot(u, d), -dot(fwd, d)]; // v[2] = distance along -fwd
                 for k in 0..3 {
@@ -249,9 +298,32 @@ mod tests {
     }
 
     #[test]
+    fn heightfield_pick_hits_the_raised_tile_in_front() {
+        let cam = Camera::fit_world(Grid::LEGACY);
+        let (min_x, min_y, max_x, max_y) = Grid::LEGACY.world_bounds();
+        let c = [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0];
+        let target = Grid::LEGACY.pick(c[0], c[1]).unwrap();
+        // Flat field: agrees with the plane pick.
+        let (bx, by) = project(&cam, [c[0], c[1], 0.0]);
+        let flat = cam.pick_heightfield(bx, by, 3.0, |x, y| Grid::LEGACY.pick(x, y).map(|_| 0.0)).unwrap();
+        assert_eq!(Grid::LEGACY.pick(flat[0], flat[1]), Some(target));
+        // Raise the target 2 units: clicking its TOP picks it, although the
+        // same screen point projects onto a different tile at z = 0.
+        let (bx, by) = project(&cam, [c[0], c[1], 2.0]);
+        let plane = cam.pick_ground(bx, by).unwrap();
+        assert_ne!(Grid::LEGACY.pick(plane[0], plane[1]), Some(target));
+        let hit = cam
+            .pick_heightfield(bx, by, 3.0, |x, y| {
+                Grid::LEGACY.pick(x, y).map(|i| if i == target { 2.0 } else { 0.0 })
+            })
+            .unwrap();
+        assert_eq!(Grid::LEGACY.pick(hit[0], hit[1]), Some(target));
+    }
+
+    #[test]
     fn fit_world_centers_the_grid() {
-        let cam = Camera::fit_world();
-        let (min_x, min_y, max_x, max_y) = hex::world_bounds();
+        let cam = Camera::fit_world(Grid::LEGACY);
+        let (min_x, min_y, max_x, max_y) = Grid::LEGACY.world_bounds();
         let (bx, by) = project(&cam, [(min_x + max_x) / 2.0, (min_y + max_y) / 2.0, 0.0]);
         assert!((bx - cam.viewport[0] / 2.0).abs() < 1.0);
         assert!((by - cam.viewport[1] / 2.0).abs() < 1.0);
@@ -259,7 +331,7 @@ mod tests {
 
     #[test]
     fn pitch_and_distance_are_clamped() {
-        let mut cam = Camera::fit_world();
+        let mut cam = Camera::fit_world(Grid::LEGACY);
         cam.orbit(0.0, 10.0);
         assert!((cam.pitch - MAX_PITCH).abs() < 1e-12);
         cam.orbit(0.0, -20.0);
@@ -272,7 +344,7 @@ mod tests {
 
     #[test]
     fn pick_ground_inverts_projection() {
-        let mut cam = Camera::fit_world();
+        let mut cam = Camera::fit_world(Grid::LEGACY);
         cam.orbit(0.7, -0.2);
         cam.pan_pixels(37.0, -12.0);
         for &(wx, wy) in &[(0.0, 0.0), (30.0, 40.0), (110.0, 95.0), (55.0, 10.0)] {
@@ -287,14 +359,14 @@ mod tests {
 
     #[test]
     fn ray_pointing_at_the_sky_misses() {
-        let cam = Camera::fit_world();
+        let cam = Camera::fit_world(Grid::LEGACY);
         assert_eq!(cam.pick_ground(cam.viewport[0] / 2.0, -1e6), None);
     }
 
     #[test]
     fn the_sun_matrix_covers_the_whole_world() {
-        let m = light_view_proj([0.36, -0.42, 0.83]);
-        let (min_x, min_y, max_x, max_y) = hex::world_bounds();
+        let m = light_view_proj([0.36, -0.42, 0.83], Grid::LEGACY.world_bounds());
+        let (min_x, min_y, max_x, max_y) = Grid::LEGACY.world_bounds();
         for &x in &[min_x, max_x] {
             for &y in &[min_y, max_y] {
                 for &z in &[0.0, 4.5] {
@@ -315,13 +387,13 @@ mod tests {
 
     #[test]
     fn pick_ground_hits_tile_centers() {
-        let cam = Camera::fit_world();
-        for i in [0usize, 100, 2048, hex::CELLS - 1] {
-            let (q, r) = hex::index_to_axial(i);
-            let (x, y) = hex::axial_to_world(q, r);
+        let cam = Camera::fit_world(Grid::LEGACY);
+        for i in [0usize, 100, 2048, Grid::LEGACY.cells() - 1] {
+            let (q, r) = Grid::LEGACY.index_to_axial(i);
+            let (x, y) = crate::sim::hex::axial_to_world(q, r);
             let (bx, by) = project(&cam, [x, y, 0.0]);
             let p = cam.pick_ground(bx, by).unwrap();
-            assert_eq!(hex::pick(p[0], p[1]), Some(i));
+            assert_eq!(Grid::LEGACY.pick(p[0], p[1]), Some(i));
         }
     }
 }

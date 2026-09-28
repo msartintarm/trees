@@ -49,7 +49,7 @@ async function loadEngine(config: InitConfig): Promise<EngineModule> {
 }
 
 function snapshot(sim: Sim): StatsSnapshot {
-  const [bare, grass, trees, burning, storms] = sim.counts();
+  const [bare, grass, trees, burning, storms, infested] = sim.counts();
   return {
     tick: sim.tick(),
     bare,
@@ -57,10 +57,16 @@ function snapshot(sim: Sim): StatsSnapshot {
     trees,
     burning: burning ?? 0,
     storms: storms ?? 0,
+    infested: infested ?? 0,
     sun: sim.sun(),
     moisture: sim.moisture(),
+    mast: sim.mast_year(),
+    diversity: sim.diversity(),
     playing: sim.is_playing(),
     selectedSpeed: sim.selected_speed(),
+    actualSpeed: sim.actual_speed(),
+    gridWidth: sim.grid_width(),
+    gridHeight: sim.grid_height(),
     seed: sim.seed(),
   };
 }
@@ -84,6 +90,9 @@ export async function startEngineSession(
 
   let disposed = false;
   let last = performance.now();
+  // The renderer's soil slab tracks the map size (it changes on reseed).
+  let gridW = 0;
+  let gridH = 0;
   let rafId = 0;
 
   const frame = (t: number): void => {
@@ -93,11 +102,18 @@ export async function startEngineSession(
     last = t;
     try {
       sim.advance(dt);
+      if (sim.grid_width() !== gridW || sim.grid_height() !== gridH) {
+        gridW = sim.grid_width();
+        gridH = sim.grid_height();
+        renderer.set_grid(gridW, gridH);
+      }
+      sim.prepare_frame();
       renderer.render(
         sim.view_proj(),
         sim.alpha(),
         sim.light_level(),
         sim.eye(),
+        sim.light_view_proj(),
         sim.ground_instances(),
         sim.ground_instance_count(),
         sim.tree_instances(0),
@@ -108,12 +124,20 @@ export async function startEngineSession(
         sim.tree_instance_count(2),
         sim.tree_instances(3),
         sim.tree_instance_count(3),
-        sim.grass_instances(),
-        sim.grass_instance_count(),
+        sim.grass_instances(0),
+        sim.grass_instance_count(0),
+        sim.grass_instances(1),
+        sim.grass_instance_count(1),
+        sim.grass_instances(2),
+        sim.grass_instance_count(2),
+        sim.grass_instances(3),
+        sim.grass_instance_count(3),
         sim.mushroom_instances(),
         sim.mushroom_instance_count(),
         sim.cloud_instances(),
         sim.cloud_instance_count(),
+        sim.sheet_instances(),
+        sim.sheet_instance_count(),
         sim.bolt_instances(),
         sim.bolt_instance_count(),
       );
@@ -163,13 +187,22 @@ export async function startEngineSession(
           p.stormRate,
           p.stormLightningP,
           p.climateSwing,
+          p.waterTable,
+          p.mutationRate,
+          p.terrain,
+          p.grassNiches,
+          p.pestStrength,
+          p.browse,
+          p.competition,
           p.seedTreeP,
           p.seedGrassP,
+          p.width,
+          p.height,
         );
         break;
       }
       case "paint":
-        sim.paint_at(c.bx, c.by, BRUSH_CODES[c.brush], c.species ?? 0);
+        sim.paint_at(c.bx, c.by, BRUSH_CODES[c.brush], c.species ?? 0, c.grass ?? 0);
         break;
       case "orbit":
         sim.orbit(c.dyaw, c.dpitch);

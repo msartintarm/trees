@@ -31,7 +31,7 @@ fn stats(samples: &[u32]) -> Stats {
 /// Coexistence verdict: both populations alive at every sample after warmup,
 /// and trees not saturating the grid (a frozen monoculture).
 fn verdict(grass: &Stats, trees: &Stats) -> &'static str {
-    let cells = hex::CELLS as u32;
+    let cells = hex::Grid::LEGACY.cells() as u32;
     if trees.min == 0 && grass.min == 0 {
         "both die out"
     } else if trees.min == 0 {
@@ -74,7 +74,7 @@ fn main() {
     let seeds = [7u64, 42, 1234];
     println!("horizon {horizon} ticks, warmup {WARMUP}, sampling every {SAMPLE_EVERY}\n");
 
-    let d = Params::default();
+    let d = Params::legacy_map();
     let planted = |p: Params| Params { seed_tree_p: 0.02, seed_grass_p: 0.10, ..p };
     for (label, p) in [
         ("savanna (defaults)", planted(d)),

@@ -18,10 +18,18 @@ import {
   MAX_DPR,
 } from "../lib/camera.ts";
 import { statsText } from "../lib/hud.ts";
-import { SPECIES_NAMES, type Brush, type StatsSnapshot, type TreeSpecies } from "../lib/protocol.ts";
+import {
+  GRASS_NAMES,
+  SPECIES_NAMES,
+  type Brush,
+  type GrassKind,
+  type StatsSnapshot,
+  type TreeSpecies,
+} from "../lib/protocol.ts";
 import { createSession, type Session } from "../lib/session.ts";
 import {
   displayValue,
+  applyPreset,
   matchingPreset,
   withFieldValue,
   DEFAULT_PARAMS,
@@ -59,6 +67,9 @@ export default function EngineCanvas() {
   brushRef.current = brush;
   const speciesRef = useRef<TreeSpecies>(treeSpecies);
   speciesRef.current = treeSpecies;
+  const [grassKind, setGrassKind] = useState<GrassKind>(0);
+  const grassRef = useRef<GrassKind>(grassKind);
+  grassRef.current = grassKind;
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -150,7 +161,14 @@ export default function EngineCanvas() {
       if (!wasClick) return;
       const rect = canvas.getBoundingClientRect();
       const { bx, by } = clientToBacking(e.clientX, e.clientY, rect, lastSize);
-      session.applyControl({ type: "paint", bx, by, brush: brushRef.current, species: speciesRef.current });
+      session.applyControl({
+        type: "paint",
+        bx,
+        by,
+        brush: brushRef.current,
+        species: speciesRef.current,
+        grass: grassRef.current,
+      });
     };
 
     const onWheel = (e: WheelEvent) => {
@@ -206,14 +224,13 @@ export default function EngineCanvas() {
     setParamText((t) => ({ ...t, [field.key]: String(displayValue(field, params)) }));
   };
 
-  const applyPreset = (key: string) => {
+  const pickPreset = (key: string) => {
     const preset = PRESETS.find((p) => p.key === key);
     if (!preset) return;
-    setParams(preset.params);
-    setParamText(
-      Object.fromEntries(PARAM_FIELDS.map((f) => [f.key, String(displayValue(f, preset.params))])),
-    );
-    send({ type: "params", params: preset.params });
+    const next = applyPreset(preset, params);
+    setParams(next);
+    setParamText(Object.fromEntries(PARAM_FIELDS.map((f) => [f.key, String(displayValue(f, next))])));
+    send({ type: "params", params: next });
   };
 
   const activePreset = matchingPreset(params);
@@ -238,9 +255,24 @@ export default function EngineCanvas() {
         </div>
         <div className={styles.row}>
           <span className={styles.label}>Brush</span>
-          {(["grass", "fire", "clear"] as Brush[]).map((b) => (
+          {(["fire", "clear"] as Brush[]).map((b) => (
             <button key={b} className={b === brush ? styles.active : ""} onClick={() => setBrush(b)}>
-              {b === "grass" ? "🌱 Grass" : b === "fire" ? "🔥 Fire" : "✕ Clear"}
+              {b === "fire" ? "🔥 Fire" : "✕ Clear"}
+            </button>
+          ))}
+        </div>
+        <div className={styles.row}>
+          <span className={styles.label}>Grass</span>
+          {GRASS_NAMES.map((name, k) => (
+            <button
+              key={name}
+              className={brush === "grass" && grassKind === k ? styles.active : ""}
+              onClick={() => {
+                setBrush("grass");
+                setGrassKind(k as GrassKind);
+              }}
+            >
+              {name}
             </button>
           ))}
         </div>
@@ -275,7 +307,7 @@ export default function EngineCanvas() {
             <select
               className={styles.preset}
               value={activePreset ?? "custom"}
-              onChange={(e) => applyPreset(e.target.value)}
+              onChange={(e) => pickPreset(e.target.value)}
             >
               {PRESETS.map((p) => (
                 <option key={p.key} value={p.key}>

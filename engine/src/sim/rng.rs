@@ -31,6 +31,24 @@ pub enum Stream {
     Climate = 10,
     /// Which species wins a contested tree establishment.
     SpeciesChoice = 11,
+    /// Wind field phases and cloud-kind selection.
+    Wind = 12,
+    /// Heritable-trait mutation on each new tree.
+    Mutation = 13,
+    /// Storm gusts toppling tall trees.
+    Windthrow = 14,
+    /// Jays caching acorns across the map.
+    Jay = 15,
+    /// Synchronized oak mast years.
+    Mast = 16,
+    /// Root resprouting after a willow dies.
+    Resprout = 17,
+    /// Terrain generation (the water-table map).
+    Terrain = 18,
+    /// Specialist pest/pathogen outbreaks (oak wilt, bark beetles).
+    Pest = 19,
+    /// Browsers (deer) eating saplings.
+    Browse = 20,
 }
 
 #[inline]

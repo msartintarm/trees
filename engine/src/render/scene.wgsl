@@ -35,12 +35,21 @@ struct VsIn {
     @location(5) scale: f32,
     @location(6) prev_scale: f32,
     @location(7) icolor: vec3<f32>,
+    // Canopy-race form: 0 broad … 1 tall and thin (trees only).
+    @location(8) slim: f32,
 };
 
-fn world_of(in: VsIn) -> vec3<f32> {
+fn world_with_form(in: VsIn, slim: f32) -> vec3<f32> {
     let s = mix(in.prev_scale, in.scale, globals.alpha);
     let sxy = 0.3 + 0.7 * s;
-    return vec3<f32>(in.pos.x * sxy, in.pos.y * sxy, in.pos.z * s) + in.ipos;
+    // Shade-avoidance form: crowded youth = taller, narrower.
+    let h = 1.0 + 0.45 * slim;
+    let w = 1.0 - 0.35 * slim;
+    return vec3<f32>(in.pos.x * sxy * w, in.pos.y * sxy * w, in.pos.z * s * h) + in.ipos;
+}
+
+fn world_of(in: VsIn) -> vec3<f32> {
+    return world_with_form(in, in.slim);
 }
 
 struct VsOut {
@@ -51,6 +60,10 @@ struct VsOut {
     @location(3) shadow_pos: vec3<f32>,
     // Vertex material weight: 1 = baked material (trunks, stems), 0 = crown.
     @location(4) mat_w: f32,
+    // Clouds only: mesh-local position (for the edge falloff) and the
+    // genus' central optical depth τ. Zero elsewhere.
+    @location(5) local: vec3<f32>,
+    @location(6) tau: f32,
 };
 
 @vertex
@@ -64,6 +77,26 @@ fn vs_main(in: VsIn) -> VsOut {
     out.mat_w = in.vweight;
     let sp = globals.light_vp * vec4<f32>(world, 1.0);
     out.shadow_pos = vec3<f32>(sp.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5), sp.z);
+    out.local = vec3<f32>(0.0);
+    out.tau = 0.0;
+    return out;
+}
+
+// Clouds: the instance's `slim` slot carries optical depth τ instead of a
+// growth form, so geometry is built with no form distortion.
+@vertex
+fn vs_cloud(in: VsIn) -> VsOut {
+    let world = world_with_form(in, 0.0);
+    var out: VsOut;
+    out.clip = globals.view_proj * vec4<f32>(world, 1.0);
+    out.color = mix(in.icolor, in.vcolor, in.vweight);
+    out.normal = in.normal;
+    out.world = world;
+    out.mat_w = in.vweight;
+    let sp = globals.light_vp * vec4<f32>(world, 1.0);
+    out.shadow_pos = vec3<f32>(sp.xy * vec2<f32>(0.5, -0.5) + vec2<f32>(0.5, 0.5), sp.z);
+    out.local = in.pos;
+    out.tau = in.slim;
     return out;
 }
 
@@ -89,8 +122,7 @@ fn vnoise(p: vec2<f32>) -> f32 {
     return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
 }
 
-@fragment
-fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+fn lit_color(in: VsOut) -> vec3<f32> {
     var n = normalize(in.normal);
 
     // Procedural bump, two domains blended by surface orientation:
@@ -124,8 +156,12 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let bias = 0.0025;
     let cmp =
         textureSampleCompare(shadow_tex, shadow_smp, in.shadow_pos.xy, in.shadow_pos.z - bias);
+    // The shadow frustum follows the camera: anything outside it reads lit
+    // (select, not a branch — the sample above stays in uniform flow).
+    let sp = in.shadow_pos.xy;
+    let inside = all(sp >= vec2<f32>(0.0)) && all(sp <= vec2<f32>(1.0));
     // Shadows soften rather than blacken.
-    let lit = mix(0.45, 1.0, cmp);
+    let lit = mix(0.45, 1.0, select(1.0, cmp, inside));
 
     // Hemisphere ambient: cool sky from above, warm soil bounce from below.
     let hemi = mix(vec3<f32>(0.30, 0.26, 0.22), vec3<f32>(0.42, 0.44, 0.48), n.z * 0.5 + 0.5);
@@ -140,8 +176,31 @@ fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
     let spec = pow(max(dot(n, h), 0.0), 26.0) * 0.16 * lit * globals.light;
     let fres = pow(1.0 - clamp(dot(n, v), 0.0, 1.0), 3.0);
     let rim = fres * 0.20 * globals.light;
-    let color = in.color * shade
+    return in.color * shade
         + vec3<f32>(1.0, 0.97, 0.90) * spec
         + vec3<f32>(0.55, 0.62, 0.70) * rim;
-    return vec4<f32>(color, 1.0);
+}
+
+@fragment
+fn fs_main(in: VsOut) -> @location(0) vec4<f32> {
+    return vec4<f32>(lit_color(in), 1.0);
+}
+
+// Cloud mesh radius at scale 1 (both the puffy and the sheet mesh).
+const CLOUD_R: f32 = 8.0;
+
+// Beer–Lambert: a cloud passes e^(−τ) of the light behind it. Optical
+// depth is greatest at the core and thins toward a ragged, noise-broken
+// edge; thin genera (cirrus, τ < 1) also break into fibrous streaks.
+@fragment
+fn fs_cloud(in: VsOut) -> @location(0) vec4<f32> {
+    let r = length(in.local.xy) / CLOUD_R;
+    let ragged = vnoise(in.local.xy * 0.9 + in.world.xy * 0.05) - 0.5;
+    let core = 1.0 - smoothstep(0.30, 1.0, r + 0.35 * ragged);
+    let thin = clamp(1.0 - in.tau / 3.0, 0.0, 1.0);
+    let fibers = vnoise(in.local.xy * vec2<f32>(0.35, 2.6));
+    let streak = mix(1.0, 0.25 + 1.5 * fibers, thin);
+    let tau = in.tau * core * streak;
+    let alpha = 1.0 - exp(-tau);
+    return vec4<f32>(lit_color(in), alpha);
 }

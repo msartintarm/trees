@@ -32,8 +32,17 @@ export type Sim = {
     stormRate: number,
     stormLightningP: number,
     climateSwing: number,
+    waterTable: number,
+    mutationRate: number,
+    terrain: number,
+    grassNiches: number,
+    pestStrength: number,
+    browse: number,
+    competition: number,
     seedTreeP: number,
     seedGrassP: number,
+    width: number,
+    height: number,
   ): void;
   set_viewport(w: number, h: number): void;
   orbit(dyaw: number, dpitch: number): void;
@@ -41,23 +50,32 @@ export type Sim = {
   zoom(factor: number): void;
   reset_camera(): void;
   view_proj(): Float32Array;
+  light_view_proj(): Float32Array;
+  prepare_frame(): void;
+  grid_width(): number;
+  grid_height(): number;
+  actual_speed(): number;
   alpha(): number;
   sun(): number;
   moisture(): number;
   light_level(): number;
+  mast_year(): boolean;
+  diversity(): number;
   eye(): Float32Array;
   pick_tile(bx: number, by: number): number;
-  paint_at(bx: number, by: number, brush: number, species: number): number;
+  paint_at(bx: number, by: number, brush: number, species: number, grass: number): number;
   ground_instances(): Uint8Array;
   ground_instance_count(): number;
   tree_instances(species: number): Uint8Array;
   tree_instance_count(species: number): number;
-  grass_instances(): Uint8Array;
-  grass_instance_count(): number;
+  grass_instances(kind: number): Uint8Array;
+  grass_instance_count(kind: number): number;
   mushroom_instances(): Uint8Array;
   mushroom_instance_count(): number;
   cloud_instances(): Uint8Array;
   cloud_instance_count(): number;
+  sheet_instances(): Uint8Array;
+  sheet_instance_count(): number;
   bolt_instances(): Uint8Array;
   bolt_instance_count(): number;
 };
@@ -66,11 +84,13 @@ export type Renderer = {
   free(): void;
   backend(): string;
   resize(w: number, h: number): void;
+  set_grid(width: number, height: number): void;
   render(
     viewProj: Float32Array,
     alpha: number,
     light: number,
     eye: Float32Array,
+    lightVp: Float32Array,
     ground: Uint8Array,
     groundN: number,
     acacia: Uint8Array,
@@ -81,12 +101,20 @@ export type Renderer = {
     pineN: number,
     willow: Uint8Array,
     willowN: number,
-    grass: Uint8Array,
-    grassN: number,
+    bunch: Uint8Array,
+    bunchN: number,
+    sod: Uint8Array,
+    sodN: number,
+    sedge: Uint8Array,
+    sedgeN: number,
+    annual: Uint8Array,
+    annualN: number,
     mushrooms: Uint8Array,
     mushroomsN: number,
     clouds: Uint8Array,
     cloudsN: number,
+    sheets: Uint8Array,
+    sheetsN: number,
     bolts: Uint8Array,
     boltsN: number,
   ): void;

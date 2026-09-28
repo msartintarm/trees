@@ -104,7 +104,9 @@ fn cone(mesh: &mut MeshData, sides: usize, cx: f32, cy: f32, radius: f32, z_base
     }
 }
 
-const TILE_HEIGHT: f32 = 0.15;
+/// Tiles are hex columns reaching below the lowest valley, so relief
+/// reads as stepped terrain with no gaps between neighbors.
+const TILE_HEIGHT: f32 = crate::sim::terrain::RENDER_RELIEF as f32 + 0.2;
 /// Slight inset leaves visible seams between tiles.
 const TILE_INSET: f32 = 0.96;
 
@@ -163,18 +165,42 @@ pub fn mushroom_mesh() -> MeshData {
     m
 }
 
-/// Squat hex tuft just above the tile surface, colored per instance.
-pub fn grass_mesh() -> MeshData {
+/// One silhouette per grass functional type, colored per instance:
+/// tall spiky bunchgrass tussocks, a low even sod mat, dark upright sedge
+/// spears, and a small scatter of annual seedheads.
+pub fn grass_mesh_for(kind: usize) -> MeshData {
     let mut m = MeshData::new();
-    hex_prism(&mut m, 0.55, 0.0, 0.16, [1.0; 3], 0.0);
+    match kind {
+        1 => {
+            // Sod: a low continuous mat almost covering the tile.
+            hex_prism(&mut m, 0.66, 0.0, 0.10, [1.0; 3], 0.0);
+        }
+        2 => {
+            // Sedge: a clump of stiff upright spears.
+            for (cx, cy, h) in [(0.0f32, 0.0f32, 0.46f32), (0.2, 0.12, 0.36), (-0.18, 0.14, 0.40), (0.02, -0.22, 0.34)] {
+                cone(&mut m, 5, cx, cy, 0.10, 0.0, h, [1.0; 3], 0.0);
+            }
+        }
+        3 => {
+            // Annual: a sparse scatter of small seedheads.
+            for (cx, cy) in [(0.22f32, 0.05f32), (-0.2, 0.2), (-0.05, -0.25), (0.1, 0.3)] {
+                cone(&mut m, 6, cx, cy, 0.09, 0.0, 0.22, [1.0; 3], 0.0);
+            }
+        }
+        _ => {
+            // Bunchgrass: separate tall tussocks with bare gaps between.
+            for (cx, cy) in [(0.24f32, 0.0f32), (-0.14, 0.22), (-0.12, -0.22)] {
+                cone(&mut m, 7, cx, cy, 0.20, 0.0, 0.42, [1.0; 3], 0.0);
+            }
+        }
+    }
     m
 }
 
 /// Dark soil slab spanning the whole grid, sitting just under the tile tops
 /// so the inset seams between tiles read as earth rather than sky.
-pub fn base_mesh() -> MeshData {
-    use crate::sim::hex;
-    let (min_x, min_y, max_x, max_y) = hex::world_bounds();
+pub fn base_mesh(grid: crate::sim::hex::Grid) -> MeshData {
+    let (min_x, min_y, max_x, max_y) = grid.world_bounds();
     let pad = 1.5 * SIZE as f32;
     let (x0, y0) = (min_x as f32 - pad, min_y as f32 - pad);
     let (x1, y1) = (max_x as f32 + pad, max_y as f32 + pad);
@@ -211,6 +237,22 @@ pub fn cloud_mesh() -> MeshData {
     m
 }
 
+/// A flat cloud sheet (~8 units radius at scale 1): a wide thin slab with a
+/// couple of offset panels so nimbostratus reads layered and cirrus wispy.
+pub fn sheet_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    for (cx, cy, rad, z0, z1) in [
+        (0.0f32, 0.0f32, 7.6f32, 0.0f32, 0.45f32),
+        (2.8, 1.2, 4.6, 0.35, 0.7),
+        (-3.4, -1.6, 4.0, 0.25, 0.6),
+    ] {
+        cylinder(&mut m, 6, cx, cy, rad, z0, z1, [1.0; 3], 0.0);
+        cone(&mut m, 6, cx, cy, rad, z1, z1 + 0.25, [1.0; 3], 0.0);
+        cone(&mut m, 6, cx, cy, rad, z0, z0 - 0.15, [1.0; 3], 0.0);
+    }
+    m
+}
+
 /// A lightning bolt: two thin offset segments (a kink) from ground to cloud
 /// base, baked over-bright so shading can't dim it.
 pub fn bolt_mesh() -> MeshData {
@@ -241,10 +283,13 @@ mod tests {
         for sp in 0..4 {
             check(&tree_mesh_for(sp));
         }
-        check(&grass_mesh());
-        check(&base_mesh());
+        for k in 0..4 {
+            check(&grass_mesh_for(k));
+        }
+        check(&base_mesh(crate::sim::hex::Grid::LEGACY));
         check(&mushroom_mesh());
         check(&cloud_mesh());
+        check(&sheet_mesh());
     }
 
     #[test]
@@ -294,6 +339,8 @@ mod tests {
         for sp in 0..4 {
             assert!(tree_mesh_for(sp).vertices.iter().all(|v| v.pos[2] >= 0.0));
         }
-        assert!(grass_mesh().vertices.iter().all(|v| v.pos[2] >= 0.0));
+        for k in 0..4 {
+            assert!(grass_mesh_for(k).vertices.iter().all(|v| v.pos[2] >= 0.0));
+        }
     }
 }

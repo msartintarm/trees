@@ -9,4 +9,5 @@
 pub mod clock;
 pub mod hex;
 pub mod rng;
+pub mod terrain;
 pub mod world;

@@ -13,7 +13,15 @@ is a `Params` field, live-editable in the panel:
 
 | Rule | Mechanism |
 | --- | --- |
-| Grid | 64×64 pointy-top hexes (odd-r offset), ground at z = 0 |
+| Grid | pointy-top hexes (odd-r offset) raised into terrain columns; **256×256 by default** (65,536 tiles), any size 8–512 per side via *Map width / height* in the panel (applies on Reseed; the camera re-frames). Rates are per tile, so densities and regimes are size-independent; cloud spawning scales with the map's linear size so cloud cover per area holds. The shadow map follows the camera, so shadows stay sharp on any map |
+| Terrain | one seeded fractal elevation field (`sim/terrain.rs`) with everything derived from it: **catena** groundwater (valley bottoms saturate, ridges drain), **aspect heat** (sun-facing slopes hot and dry, shaded slopes cool), and **soil depth** (thin and rocky on ridges and steep slopes, deep in the bottoms). Rendered with a 2.5× vertical exaggeration; clicks pick by ray-marching the tile tops. `terrain` param = 0 gives the legacy flat world |
+| Grass functional types | four kinds (`world.rs::GRASS_TABLE`) with **unimodal** niche responses to site temperature × water (niche fit uses the terrain with only 35 % of the climate swing, so the map, not the weather, decides who lives where): **bunchgrass** (C4, hot dry slopes, drought-tolerant, flammable, resprouts after fire, gappy tussocks that let seedlings through), **sod grass** (C3, cool slopes, shade-tolerant, browns in drought, rhizome mat that blocks seedlings), **sedge** (saturated valley bottoms, flood-tolerant), **annuals** (short-lived colonizers that build a persistent soil **seed bank** and flush on burns and drought gaps; perennials overgrow them on undisturbed ground). Paint any kind with the grass picker. `grass_niches` = 0 gives one generic grass |
+| Tree niches | trees fit a thermal optimum (acacia hot, oak cool, pine and willow broad) and a **soil competitive hierarchy**: demanding species (oak) win deep soil, stress-tolerators (pine, acacia) keep the thin ridges. Oak and acacia saplings **resprout from the root crown** after fire (pine relies on serotiny) |
+| Neighbor competition | grounded penalties on encroachment (`competition` param): **conspecific negative density dependence** (Janzen-Connell / plant–soil feedback — seedlings do worse among adults of their own kind), **own-canopy shade intolerance** (oak seedlings fail beneath oaks: the oak regeneration problem), **pine needle litter** (acidic allelopathic carpet suppressing other seedlings and grass, drawn as rust-brown ground), **sod thatch** smothering annuals, and **root water competition** (established roots drain dry soil around saplings, which visibly wilt). Big-seeded oak and acacia push through sod on their seed reserves |
+| Pests | specialist outbreaks (`pest_strength`): oak wilt spreads tree-to-tree through **root grafts** between same-species neighbors, new outbreaks start in dense same-species stands, the load builds until the host dies; resistant species (acacia) often recover. Infested crowns bronze and thin; 🐛 in the HUD counts them. Dense monocultures thin themselves into gaps that pioneers refill |
+| Browsing | deer (`browse`) eat saplings by palatability (oak, willow ≫ thorny acacia, resinous pine): some browsing kills, the rest sets growth back — stunted saplings stay in reach longer (the browse trap) and render smaller |
+| Long-distance seed | jays cache acorns within 12 hexes of the parent; wind seed goes map-wide — and every far-flung seed faces the full site filter (niche, soil, shade, competition, mast-year predation), so seed landing in another species' habitat rarely takes. Lean-year acorn crops are mostly eaten (predator satiation drives masting) |
+| Biodiversity | 🌿 in the HUD: effective number of plant types, e^Shannon over the 4 tree species + 4 grass kinds (grass counts as one type when niches are off). Flat plain ≈ 2.2, default landscape ≈ 4.6–4.9 |
 | Tree seed rain | each **mature** tree deposits a distance kernel over its range disk — Janzen-Connell dip at d1, peak at d2, exponential tail; sources compound as `p = 1 − (1−p₁)^W`, capped at `SEED_RAIN_CAP`. Seed rain is per species: offspring inherit their parent's kind |
 | Species | four varieties on distinct strategy corners (`world.rs::SPECIES_TABLE`, curated multipliers — not panel knobs). **Acacia**: baseline pioneer, drought-hardy. **Oak**: climax — slow, late-maturing, long-lived, shade-tolerant seedlings, early fireproof bark, heavy acorns (dispersal 2), space-hungry (4× crowding), slow-rotting nutrient-rich wood. **Pine**: fast, flammable past maturity, but 3× recruitment on ash (serotiny). **Willow**: booms on wet ground (water exponent 2), dies hard in drought, fast and short-lived |
 | Maturity | trees younger than 40 ticks don't seed, shade, crowd, or resist fire |
@@ -21,10 +29,17 @@ is a `Params` field, live-editable in the panel:
 | Grass | creep-only by default: no spontaneous seeding, 8 %/tick per adjacent grass tile — swards advance as fronts from what you plant, and a locally extinct sward stays gone |
 | Sod competition | tree establishment on grass ×0.4 (>1 = nurse-plant mode) |
 | Self-thinning | >2 mature neighbors → extra 0.2 %/tick death per excess neighbor |
+| Canopy race | shade-avoidance: every tree (any age) shades its ring; a young tree accrues etiolation while hemmed in, frozen at maturity — so forest-grown trees are permanently up to 45 % taller and 35 % narrower, open-grown ones short and broad. Husks keep the form |
+| Water table | the terrain's catena groundwater (see Terrain): tops up effective water for growth, damps fire spread, shows as damp cool soil. `water_table` param scales it |
+| Species behaviors (from field ecology) | **pine serotiny** — a mature pine that burns releases its cone bank onto the ash around it; **oak masting** — synchronized boom years (every ~2–5 years, weather-cued) with lean years in between, plus **jay caching** of acorns map-wide; **willow** — seed needs wet ground (basins or fresh rain), roots tolerate flooding (other species drown in saturated basins), dying mature willows **resprout from the root**; **acacia nitrogen fixation** — offsets its own soil draw, enriches its ring, and gives it an edge on poor soil; **long-distance dispersal** for every species (jays, winged and cottony seed, animal-carried pods); **windthrow** — storm gusts topple mature trees, tall thin forest-grown ones first |
+| Evolution | every tree carries heritable [vigor, hardiness]: vigor trades fecundity (more seed, individually) for a shorter life; hardiness flattens drought stress both ways. Offspring take the vigor-weighted parental mean of the arriving seed plus a small mutation (`mutation_rate`). Selection is real but weak against drift — hardiness rises under harsh climates; lineages show as canopy tints (bright = vigorous, glaucous = hardy) |
+| Root network | adjacent trees are linked (root grafts / mycorrhizae): soil nutrients diffuse from rich to poor tiles along tree–tree pairs each tick; mature trees nurse same-species seedlings beside them (hazard ×0.6); overlapping root plates drain shared soil faster |
 | Fire | grass is fuel: ignitions spread tile-to-tile through contiguous grass and saplings; mature trees survive and act as firebreaks. Background lightning off by default; the 🔥 brush, storm bolts, and fire presets supply ignition |
 | Climate | two deterministic signals — ☀ sun and 💧 moisture — drift through wet years and droughts (shown in the HUD; `climate_swing` scales the amplitude). They multiply growth, mortality, flammability, and storm frequency, all calibrated to exactly 1 at the neutral climate. Droughts brown and wilt the whole map, dim the light, quadruple ignition; wet years flush green and brew storms |
 | Mortality | a per-tick hazard (`weather stress / mean_life`), not a lifespan: lifetimes are unbounded geometrics, so a tree CAN live forever — but survival decays exponentially and in equilibrium very few grow old. Droughts are when most of the dying happens |
-| Weather | thunderclouds spawn off-map and sweep across (on by default, more in wet seasons): the inner rain core soaks tiles — wet fuel can't catch, burning tiles are doused, wet soil grows faster — while lightning strikes anywhere under the cloud, so dry edge strikes can start fires the storm's own rain never reaches. Clouds drift smoothly overhead with real shadows; ⛈ in the HUD |
+| Cloud optics | clouds are translucent by **Beer–Lambert** transmittance e^(−τ): cirrus τ≈0.7 (a see-through fibrous veil), cumulus τ≈4 with ragged thinning edges, nimbostratus τ≈6, cumulonimbus τ≈14 (opaque). Optical depth tapers to a noise-broken rim; a separate alpha-blended pass draws them over the scene |
+| Weather | four cloud genera at stacked altitudes (`world.rs::CLOUD_TABLE`), spawned by the weather (moist air brews the rain-bearers): **cumulus** (low, fair-weather, dappled shadow), **cumulonimbus** (the thunderhead: rain core + lightning — dry edge strikes can outrun its own rain), **nimbostratus** (wide grey sheet, soaks ~its whole footprint, no lightning), **cirrus** (high, fast, nearly shadowless). ⛈ counts the rain-bearers |
+| Wind | a seeded, slowly-meandering surface wind drives all cloud motion, with Ekman-style shear per layer: higher layers move faster and veer further (cirrus ~2.3× speed, 0.7 rad off the surface wind — low scud and high wisps visibly cross). Clouds spawn upwind, integrate the wind each tick, and exit downwind |
 | Genesis | the world starts **empty** — you paint the founding trees and grass with the brushes (runs replay exactly from seed + params + click history) |
 | Nutrient cycle | decomposition returns biomass to a per-tile fertility store (rotted tree ≫ thatch; charcoal keeps most carbon locked) and fire mineralizes an immediate ash flush; fertility multiplies establishment by up to `1 + nutrient_boost`, living plants draw the store down, idle soil leaches back. Rendered as the soil darkening toward loam |
 | Death & decay | old age is telegraphed (plants wilt and shrink past 80 % of their lifespan); every death leaves a standing husk — grey snag, straw thatch, or charcoal — that **blocks regrowth** until saprotrophic mycelium finishes it. Colonization builds faster beside other colonized wood (inoculum proximity), mushrooms fruit on established wood, and charcoal resists rot ~4×, so burn snags linger and old burn scars break up fuel. Ash stains the ground for 60 ticks (visual only) |
@@ -94,13 +109,24 @@ cd web && npm test             # protocol/camera/hud/simParams via node --test
 
 `engine/tests/ecology.rs` asserts long-run *regimes* against measured bands:
 the default savanna coexists on every seed, faster trees close into moist
-forest, strong lightning is bistable by seed, the fire trap selects against
+forest, strong lightning leaves willow refuges in the wet valleys, every
+plant type holds its own corner of the landscape, relief + grass niches add
+more than one effective type over the flat plain, the fire trap selects against
 late maturity, and a clonal-free grassland matches the analytic birth–death
 balance (~485 grass tiles once husk-blocked turnover is accounted for). The
 bands come from the probe:
 
 ```
-cargo run --release --example equilibrium    # sweep configs, print stats
+cargo run --release --example equilibrium      # sweep configs, print stats
+cargo run --release --example species_probe    # per-species niches, solo vs mixed
+cargo run --release --example evolution_probe  # selection on heritable traits
+cargo run --release --example niche_probe      # where each type lives + diversity, flat vs terrain
+cargo run --release --example oak_probe        # tree composition per regime, each competition mechanism knocked out
+cargo run --release --example scale_probe      # tick/frame cost and densities at 64² … 512²
+
+Tests and probes run on the original 64×64 calibration map
+(`Params::legacy_map()`, `Grid::LEGACY`): all regime bands were measured
+there, and nothing in the ecology depends on map size.
 ```
 
 Measured regimes (12k-tick runs, multiple seeds) — selectable in the panel's
@@ -108,10 +134,11 @@ Preset dropdown (`simParams.ts::PRESETS`; reads Custom once you hand-edit):
 
 | Preset | Config | Long-run |
 | --- | --- | --- |
-| Savanna parkland (default) | tree growth 0.2 %, clonal 8 %, no base lightning | grass ≈ 630 under a mixed pioneer woodland (pine-led, acacia, oak groves, willow fringe) |
-| Moist forest | tree growth 1 %, no base lightning | **succession**: pioneers dominate the young stand, then shade-tolerant oaks close a dense canopy (~1,900) and relegate them to relics |
+| Savanna parkland (default) | tree growth 0.2 %, clonal 8 %, no base lightning, full relief + grass niches | ~4.8 effective types: pine on thin ridges, oak on deep mid-slopes, acacia on sunny slopes, willow + sedge in the valleys, sod on the shady slopes, bunchgrass and annuals on the hot open ground; grass ≈ 1,000–1,500, trees ≈ 550–900 |
+| Flat plain | defaults with terrain 0, grass niches 0 | the pre-terrain world: nothing to sort by, ~2.2 effective types |
+| Moist forest | tree growth 1 %, no base lightning | a **mixed forest** (~1,200 trees, ~4.4 effective types): oak leads late, but its seedlings fail beneath its own canopy and oak-wilt outbreaks sweep dense stands, so pine and willow hold the gaps (without neighbor competition it collapses to ~95 % oak) |
 | Fire-swept grassland | tree growth 0.1 %, lightning 0.05 % | the sward surges in wet years and burns in droughts; trees extinct |
-| Fire lottery | defaults + lightning 0.05 % | fire keeps the oaks out: pure grassland or a pioneer woodland, by seed |
+| Fire savanna | defaults + lightning 0.05 % | burns sweep the uplands into bunchgrass and annuals; the wet valleys don't carry fire, so riparian willow stands survive on every seed |
 
 Regimes are measured from a "planted" scatter (2 % trees, 10 % grass — the
 probe's stand-in for your brushwork); presets themselves start empty.
@@ -133,6 +160,12 @@ npm run dev                    # builds the wasm first (cached by content hash)
 Open http://localhost:3000 — click to plant, drag to orbit, shift/right-drag
 to pan, wheel to zoom. `npm run build` produces the static export in `web/out`.
 
+
+**Performance on big maps.** A tick costs ~115 ns per tile natively (≈7 ms
+at 256², ≈30 ms at 512²; wasm somewhat more). Each frame gets a wall-clock
+tick budget, so at high speeds a big map slows down gracefully instead of
+freezing — the HUD then shows the achieved speed, e.g. `▶ 32× (≈6×)`.
+Instance streams are built once per frame (`prepare_frame`).
 ## Deliberate differences from traffic
 
 No threads build or COOP/COEP shim, no serde/`import` feature, no GPU compute,

@@ -208,7 +208,121 @@ strongest on mat_w=1 trunk/stem vertices. WGSL uniformity lesson from the
 user's browser: never branch around textureSampleCompare — sample
 unconditionally (above-frustum geometry compares lit via negative ref).
 
+## P19 — Cloud taxonomy + wind field ✅
+Four genera in CLOUD_TABLE (cumulus 7.0 / cumulonimbus 8.5 / nimbostratus
+10.5 / cirrus 14.0) with per-kind radius, rain core, lightning gate, and
+shadow depth; genus drawn per spawn with moisture-weighted odds. Cloud
+motion reworked from fixed velocities to a deterministic wind field
+(seeded meandering direction + breathing speed) with per-layer Ekman shear
+(speed multipliers 0.85–2.3×, veer up to 0.7 rad); clouds spawn upwind,
+integrate wind per tick (renderer interpolates pos − vel·(1−alpha)), exit
+downwind. Puffy vs sheet meshes (7th instance stream); ⛈ now counts only
+rain-bearers; "Cloud frequency" default 0.8 %. Regimes re-probed: savanna/
+forest/grassland hold, lottery spectrum re-pinned (woodland seed 9).
+100 engine + 22 web tests.
+
+## P20 — Canopy race + root network ✅
+Shade-avoidance: `tree_nbrs` (all-age trees at d1) feeds a per-tree
+etiolation accumulator while young, frozen at maturity (form set in youth);
+`Instance.slim` (36-byte instance now) stretches height ×(1+0.45·slim) and
+narrows width ×(1−0.35·slim) in the vertex shader; husks carry the form.
+Root network: pairwise nutrient diffusion (1/16 of the difference per
+linked tree pair per tick), kin nursing (same-species mature neighbor →
+seedling hazard ×0.6), root-competition drain (+⌊tree_nbrs/2⌋ per tick).
+Regimes re-probed: all hold (forests a touch denser; fire-trap and
+lottery bands widened). New tests: crowded vs open form + freeze, diffusion
+rich→poor and isolation, kin > stranger > alone survival, and the
+population statistic "forest trees ≫ slimmer than savanna trees".
+104 engine + 22 web tests.
+
+## P21 — Species differentiation + evolution ✅
+Probe (`examples/species_probe.rs`) diagnosed: pine went extinct under
+fire (no seed release on burn), acacia≈pine, oak couldn't colonize open land
+yet monopolized forests, willow had no niche. Implemented from field
+ecology: pine serotiny (burn-out of a mature pine seeds its ash disk);
+water-table map (seeded gaussian basins; boosts tile water, damps fire);
+willow wet-ground germination, flood tolerance (waterlogging kills other
+species' seedlings/adults in saturated basins), root resprouting; oak
+masting (weather-cued synchronized years) + jays; generalized long-distance
+dispersal for all species; acacia nitrogen fixation (offsets own drain,
+enriches ring, fixed-fertility establishment — no runaway); windthrow
+(gust × etiolation). Heritable genome [vigor, hardiness] with
+vigor-weighted fecundity (first cut applied vigor to the tile's blended
+rain → vigor collapsed everywhere; individual fecundity fixed it).
+Result: four-species niche partitioning in savanna and harsh climate,
+willow basin refuge in forests, fire lottery now savanna↔woodland (no pure
+collapse). Tried & reverted: pioneer gap bonus (broke savanna). Known
+limit: pine/acacia still can't hold windthrow gaps in closed oak forest.
+114 engine + 23 web tests.
+
+## P22 — Terrain + grass functional types + biodiversity ✅
+New `sim/terrain.rs`: one seeded 3-octave elevation field → catena
+groundwater, aspect heat (surface normal vs sun), soil depth. Grass split
+into four functional types (bunch C4 / sod C3 / sedge / annual) with
+unimodal temperature × water niches, per-kind creep, shade, drought
+sensitivity, flammability, fire resprouting, seedling competition; annuals
+spread by a persistent seed bank. Trees gained thermal optima, a centered
+deep-soil competitive hierarchy (oak ↑ deep, pine ↑ thin), and sapling
+root-crown fire resprouting (oak, acacia). Probe-driven balancing
+(`examples/niche_probe.rs`): first cut *lowered* diversity — heat was
+compressed (gain 2.5 → 7.5), climate swings moved the niches wholesale
+(fix: niche fit on site conditions with the swing damped to 35 %), sod
+invaded bunch ground through shade, oak lacked any advantage (shade
+tolerance 0.15 → 0.45). Legacy check caught 1−∏ grass pressure combination
+breaking exact niches-off equivalence → additive. Result: effective types
+2.2 (flat) → 4.6–4.9, all eight types in their textbook homes; heavy
+lightning now leaves valley willow refuges instead of a seed lottery.
+Render: hex-column terrain (2.5× vertical exaggeration), bedrock tint on
+thin soils, per-kind grass meshes, ray-marched height-field picking,
+relief-aware shadow box with terrain casting. HUD 🌿 diversity readout,
+grass-kind brush picker, Flat plain / Fire savanna presets.
+103 unit + 16 integration + 24 web tests.
+
+## P23 — Encroachment penalties + distinct canopies + cloud optics ✅
+User noticed oak spreading "randomly" and crowding others. Measured first
+(`examples/oak_probe.rs`): long-distance seed bypassed every establishment
+filter, but it was NOT the main cause — the moist forest was ~95 % oak even
+with it off (oak regenerated under itself and outlived everything). Added:
+shared `tree_establishment` site filter for local AND long-distance seed;
+jay caching within 12 hexes; conspecific negative density dependence;
+own-canopy shade intolerance (oak); pine needle litter (allelopathy);
+sod thatch vs annuals; root water competition; oak-wilt-style pest
+outbreaks spreading through same-species root grafts; deer browsing by
+palatability with growth setback; harsher lean-year acorn predation.
+First cut wiped oak out entirely (the penalties compound on a poorly
+dispersed species — that's Janzen-Connell's point); oak was given its
+real counter-traits: jays (long_distance 6), taproot drought tolerance,
+acorn seed reserves that push through sod. Result: moist forest mixed
+(oak leads late, wilt outbreaks cycle it; 1.5 → ~4.4 effective types),
+default keeps all four species. Visuals: distinct canopy palette (khaki
+acacia / leafy oak / blue-green pine / silver-sage willow, each aging
+toward its own duller shade), bronzed thinning infested crowns, stunted
+browsed saplings, wilting root-starved saplings, rust needle carpet,
+mast-year acorn cast, 🐛 HUD count. Clouds: Beer–Lambert translucency
+per genus with ragged edges and cirrus streaks in a blended pass.
+Known: pine rarely survives the heavy-lightning preset now (willow
+valley refuges carry it). 113 unit + 17 integration + 25 web tests.
+
+## P24 — Configurable map size (default 16× area) ✅
+`hex` constants → runtime `Grid` owned by the World (`Params.width/height`,
+8–512 per side, applied on reseed; default 256×256). Tests and probes pin
+`Grid::LEGACY` (64×64) — all 132 engine tests passed unchanged, confirming
+exact legacy equivalence. Scaling work: storm rain/windthrow and cloud
+shadows scan only a bounding box per cloud (were O(storms × tiles));
+bridge builds instance streams once per frame instead of once per getter
+(~14×); per-frame wall-clock tick budget (≥ 12 ms or 60 % of the frame)
+with a measured achieved speed in the HUD; camera-following shadow
+frustum; renderer `set_grid` for the soil slab; camera distance limits
+widened. Cloud spawn ∝ linear size keeps cover/area (3.7 vs 5.0 per 4k
+tiles at steady state). Presets no longer carry the map size. Known: the
+tick is ~115 ns/tile spread evenly across passes — 32× on 256² is
+CPU-bound; a profiler-guided pass (or a worker-parallel tick) is the next
+lever.
+
 ## Ideas / not done
+- True speciation: reproductive isolation between diverged lineages (currently traits blend freely)
+- Pioneer persistence in closed forests (gap dynamics beyond windthrow)
+- Herbivores (browsers) for acacia's thorn/ant defenses
 - Deploy workflow (GitHub Pages) like traffic's `.github/workflows/deploy.yml`
 - Touch pinch-zoom gesture; hover tile tooltip
 - Population sparkline; age histogram overlay

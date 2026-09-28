@@ -19,8 +19,19 @@ export type SimParams = {
   nutrientBoost: number;
   stormRate: number;
   stormLightningP: number;
+  climateSwing: number;
+  waterTable: number;
+  mutationRate: number;
+  terrain: number;
+  grassNiches: number;
+  pestStrength: number;
+  browse: number;
+  competition: number;
   seedTreeP: number;
   seedGrassP: number;
+  /** Map size in tiles per side (applies on Reseed). */
+  width: number;
+  height: number;
 };
 
 export const DEFAULT_PARAMS: SimParams = {
@@ -37,30 +48,45 @@ export const DEFAULT_PARAMS: SimParams = {
   fireIgnitionP: 0.0,
   fireSpreadP: 0.85,
   nutrientBoost: 1.0,
-  stormRate: 0.003,
+  stormRate: 0.008,
   stormLightningP: 0.06,
   climateSwing: 0.7,
+  waterTable: 1.0,
+  mutationRate: 0.03,
+  terrain: 1.0,
+  grassNiches: 1.0,
+  pestStrength: 1.0,
+  browse: 1.0,
+  competition: 1.0,
   seedTreeP: 0.0,
   seedGrassP: 0.0,
+  width: 256,
+  height: 256,
 };
 
 /// Named configurations surfaced in the panel. Populations quoted in `hint`
-/// are long-run means measured by `engine/examples/equilibrium.rs` (5 seeds
-/// for the default, 3 for the rest, 12k ticks); `engine/tests/ecology.rs`
-/// pins each regime with band assertions.
+/// are long-run means measured by the engine's example probes
+/// (`equilibrium`, `niche_probe`); `engine/tests/ecology.rs` pins each
+/// regime with band assertions.
 export type Preset = { key: string; label: string; hint: string; params: SimParams };
 
 export const PRESETS: Preset[] = [
   {
     key: "defaults",
     label: "Savanna parkland",
-    hint: "grass ≈ 630 with a mixed pioneer woodland (pine, acacia, oak groves, willow)",
+    hint: "~4.5 effective plant types (~10% tree cover, ~40% grass): pine ridges, oak mid-slopes, acacia on sunny slopes, willow & sedge valleys, sod on shady slopes",
     params: DEFAULT_PARAMS,
+  },
+  {
+    key: "flat-plain",
+    label: "Flat plain",
+    hint: "no relief, one generic grass: nothing to sort by, ~2.2 effective types",
+    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0 },
   },
   {
     key: "moist-forest",
     label: "Moist forest",
-    hint: "succession: pioneers first, then oaks close a dense canopy (~1,900)",
+    hint: "mixed forest (~30% tree cover): oak leads late but oak wilt and self-shading keep pine & willow in the gaps",
     params: { ...DEFAULT_PARAMS, treeGrowthP: 0.01 },
   },
   {
@@ -70,18 +96,26 @@ export const PRESETS: Preset[] = [
     params: { ...DEFAULT_PARAMS, treeGrowthP: 0.001, fireIgnitionP: 0.0005 },
   },
   {
-    key: "fire-lottery",
-    label: "Fire lottery",
-    hint: "fire keeps the oaks out: grassland or a pioneer woodland, by seed",
+    key: "fire-savanna",
+    label: "Fire savanna",
+    hint: "burns sweep the uplands into bunchgrass & annuals; willows survive in the wet valleys",
     params: { ...DEFAULT_PARAMS, fireIgnitionP: 0.0005 },
   },
 ];
 
 /** Key of the preset matching `params` exactly, or null for a custom mix. */
+/** Map size is independent of the ecology: presets neither set nor match it. */
+const MAP_KEYS: ReadonlySet<keyof SimParams> = new Set(["width", "height"]);
+
 export function matchingPreset(params: SimParams): string | null {
   const same = (a: SimParams, b: SimParams) =>
-    (Object.keys(DEFAULT_PARAMS) as (keyof SimParams)[]).every((k) => a[k] === b[k]);
+    (Object.keys(DEFAULT_PARAMS) as (keyof SimParams)[]).every((k) => MAP_KEYS.has(k) || a[k] === b[k]);
   return PRESETS.find((p) => same(p.params, params))?.key ?? null;
+}
+
+/** A preset's ecology applied onto the current params, keeping the map size. */
+export function applyPreset(preset: Preset, current: SimParams): SimParams {
+  return { ...preset.params, width: current.width, height: current.height };
 }
 
 export type ParamField = {
@@ -110,11 +144,20 @@ export const PARAM_FIELDS: ParamField[] = [
   { key: "fireIgnitionP", label: "Lightning %/grass tile", kind: "percent", min: 0, max: 100, step: 0.001 },
   { key: "fireSpreadP", label: "Fire spread %", kind: "percent", min: 0, max: 100, step: 5 },
   { key: "nutrientBoost", label: "Nutrient boost %", kind: "percent", min: 0, max: 500, step: 10 },
-  { key: "stormRate", label: "Storm frequency %/tick", kind: "percent", min: 0, max: 100, step: 0.05 },
+  { key: "stormRate", label: "Cloud frequency %/tick", kind: "percent", min: 0, max: 100, step: 0.05 },
   { key: "stormLightningP", label: "Storm lightning %/tick", kind: "percent", min: 0, max: 100, step: 1 },
   { key: "climateSwing", label: "Climate swings %", kind: "percent", min: 0, max: 100, step: 5 },
+  { key: "waterTable", label: "Water table %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "mutationRate", label: "Mutation %/birth", kind: "percent", min: 0, max: 20, step: 0.5 },
+  { key: "terrain", label: "Terrain relief %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "grassNiches", label: "Grass niches %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "pestStrength", label: "Pest outbreaks %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "browse", label: "Deer browsing %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "competition", label: "Neighbor competition %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "seedTreeP", label: "Seed trees %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "seedGrassP", label: "Seed grass %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
+  { key: "width", label: "Map width (tiles)", kind: "int", min: 8, max: 512, step: 8, appliesOnReseed: true },
+  { key: "height", label: "Map height (tiles)", kind: "int", min: 8, max: 512, step: 8, appliesOnReseed: true },
 ];
 
 function clampField(field: ParamField, display: number): number {

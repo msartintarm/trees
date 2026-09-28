@@ -10,6 +10,10 @@ export type Brush = "tree" | "grass" | "clear" | "fire";
 export type TreeSpecies = 0 | 1 | 2 | 3;
 export const SPECIES_NAMES = ["Acacia", "Oak", "Pine", "Willow"] as const;
 
+/** Grass functional types, matching the engine's GrassKind table. */
+export type GrassKind = 0 | 1 | 2 | 3;
+export const GRASS_NAMES = ["Bunchgrass", "Sod grass", "Sedge", "Annual"] as const;
+
 export const BRUSH_CODES: Record<Brush, number> = { clear: 0, grass: 1, tree: 2, fire: 3 };
 
 export type Control =
@@ -19,7 +23,7 @@ export type Control =
   | { type: "speed"; value: number }
   | { type: "reseed"; seed: number }
   | { type: "params"; params: SimParams }
-  | { type: "paint"; bx: number; by: number; brush: Brush; species?: TreeSpecies }
+  | { type: "paint"; bx: number; by: number; brush: Brush; species?: TreeSpecies; grass?: GrassKind }
   | { type: "orbit"; dyaw: number; dpitch: number }
   | { type: "panBy"; dx: number; dy: number }
   | { type: "zoom"; factor: number }
@@ -63,8 +67,19 @@ export type StatsSnapshot = {
   /** Climate signals, 0..1. */
   sun: number;
   moisture: number;
+  /** An oak mast year is under way. */
+  mast: boolean;
+  /** Trees carrying a pest/pathogen outbreak (oak wilt, bark beetles). */
+  infested: number;
+  /** Effective number of plant types (e^Shannon over trees + grass kinds). */
+  diversity: number;
   playing: boolean;
   selectedSpeed: number;
+  /** Achieved speed; below selectedSpeed when a big map can't keep up. */
+  actualSpeed: number;
+  /** Current map size in tiles. */
+  gridWidth: number;
+  gridHeight: number;
   seed: number;
 };
 

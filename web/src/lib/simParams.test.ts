@@ -4,6 +4,7 @@ import assert from "node:assert/strict";
 import {
   clampParams,
   displayValue,
+  applyPreset,
   matchingPreset,
   withFieldValue,
   DEFAULT_PARAMS,
@@ -83,9 +84,23 @@ test("the regime presets differ along the measured axes", () => {
   assert.equal(by["defaults"].fireIgnitionP, 0, "default savanna has no lightning");
   assert.ok(by["moist-forest"].treeGrowthP > by["defaults"].treeGrowthP, "forest grows trees faster");
   assert.equal(by["moist-forest"].fireIgnitionP, 0);
-  assert.ok(by["fire-grassland"].treeGrowthP < by["fire-lottery"].treeGrowthP, "grassland trees can't outgrow the flames");
+  assert.ok(by["fire-grassland"].treeGrowthP < by["fire-savanna"].treeGrowthP, "grassland trees can't outgrow the flames");
   assert.ok(by["fire-grassland"].fireIgnitionP > 0);
-  assert.ok(by["fire-lottery"].fireIgnitionP > 0);
+  assert.ok(by["fire-savanna"].fireIgnitionP > 0);
+  assert.equal(by["defaults"].terrain, 1, "the default world has relief");
+  assert.equal(by["flat-plain"].terrain, 0, "the flat plain is the no-niche baseline");
+  assert.equal(by["flat-plain"].grassNiches, 0);
+});
+
+test("presets keep the map size and still match on a custom-sized map", () => {
+  const big = { ...DEFAULT_PARAMS, width: 384, height: 128 };
+  const forest = PRESETS.find((p) => p.key === "moist-forest")!;
+  const applied = applyPreset(forest, big);
+  assert.equal(applied.width, 384);
+  assert.equal(applied.height, 128);
+  assert.equal(applied.treeGrowthP, forest.params.treeGrowthP);
+  assert.equal(matchingPreset(applied), "moist-forest");
+  assert.equal(matchingPreset(big), "defaults");
 });
 
 test("every SimParams key has exactly one field spec", () => {
