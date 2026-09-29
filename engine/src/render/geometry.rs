@@ -108,7 +108,7 @@ fn cone(mesh: &mut MeshData, sides: usize, cx: f32, cy: f32, radius: f32, z_base
 /// Tiles are hex columns reaching below the lowest valley (hills plus
 /// mountains), so relief reads as stepped terrain with no gaps between
 /// neighbors and the map edge shows as a solid block of land.
-const TILE_HEIGHT: f32 =
+pub const TILE_HEIGHT: f32 =
     (crate::sim::terrain::RENDER_RELIEF + crate::sim::terrain::MACRO_RENDER) as f32 + 0.3;
 /// Slight inset leaves visible seams between tiles.
 const TILE_INSET: f32 = 0.96;

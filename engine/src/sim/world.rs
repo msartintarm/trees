@@ -1327,9 +1327,11 @@ pub enum DeathCause {
     Windthrow = 8,
     Browsed = 9,
     Scoured = 10,
+    /// Felled by the player (leaves a stump).
+    Logged = 11,
 }
 
-pub const DEATH_CAUSE_COUNT: usize = 11;
+pub const DEATH_CAUSE_COUNT: usize = 12;
 
 /// Cloud lifecycle events, tallied for the HUD and probes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1413,6 +1415,7 @@ impl DeathCause {
             8 => Windthrow,
             9 => Browsed,
             10 => Scoured,
+            11 => Logged,
             _ => Age,
         }
     }
@@ -1431,6 +1434,7 @@ impl DeathCause {
             Windthrow => "windthrow",
             Browsed => "browsed",
             Scoured => "flood scour",
+            Logged => "logging",
         }
     }
 }
@@ -1538,6 +1542,8 @@ pub struct World {
     melt_recent: f64,
     /// The tile of the most recent ground strike (for a localized flash).
     last_strike: Option<usize>,
+    /// Structures the player built (1 = a house): nothing grows there.
+    built: Vec<u8>,
     /// Mature-tree count at distance 1 (crowding pressure).
     mature_nbrs: Vec<u8>,
     /// Grass count at distance 1 (clonal spread pressure).
@@ -1635,6 +1641,7 @@ impl World {
             reserve: vec![0.0; n],
             soaked: vec![0; n],
             remains_cause: vec![0; n],
+            built: vec![0; n],
             deaths_total: [0; DEATH_CAUSE_COUNT],
             deaths_recent: [0.0; DEATH_CAUSE_COUNT],
             cloud_events: [0; CLOUD_EVENT_COUNT],
@@ -2391,7 +2398,7 @@ impl World {
 
     /// Brush stroke choosing the grass kind (the panel's grass picker).
     pub fn paint_grass(&mut self, index: usize, kind: GrassKind, tick: u64) {
-        if self.channel[index] {
+        if self.channel[index] || self.built[index] != 0 {
             return;
         }
         self.plant_grass(index, kind, tick);
@@ -2453,14 +2460,53 @@ impl World {
 
     /// Brush stroke choosing the tree species (the panel's species picker).
     pub fn paint_species(&mut self, index: usize, brush: Brush, sp: Species, tick: u64) {
-        if self.channel[index] && matches!(brush, Brush::Tree | Brush::Grass) {
-            return; // nothing roots in open water
+        if (self.channel[index] || self.built[index] != 0) && matches!(brush, Brush::Tree | Brush::Grass) {
+            return; // nothing roots in open water or under a house
         }
         if brush == Brush::Tree {
             self.plant_tree(index, sp, tick);
         } else {
             self.paint(index, brush, tick);
         }
+    }
+
+    /// Fell the tree on a tile (the walking player's axe): it dies of
+    /// logging, leaving a stump that rots like any husk. Returns the timber
+    /// it yields (≈ 1 for a sapling up to 4 for a mature tree), or None if
+    /// there's no tree.
+    pub fn fell_tree(&mut self, index: usize, tick: u64) -> Option<f64> {
+        if self.state[index] != Cell::Tree {
+            return None;
+        }
+        let tr = self.species(index).traits();
+        let mature = (self.params.tree_maturity_age as f64 * tr.maturity).max(1.0);
+        let grown = (self.age(index, tick) as f64 / mature).clamp(0.0, 1.0);
+        self.record_death(index, DeathCause::Logged);
+        self.leave_remains(index, false, tick);
+        self.state[index] = Cell::Bare;
+        self.burn[index] = 0;
+        Some(1.0 + 3.0 * grown)
+    }
+
+    /// Build a house on a tile: the ground is cleared and nothing grows
+    /// there while it stands. Fails on open water or an existing house.
+    pub fn build_house(&mut self, index: usize, tick: u64) -> bool {
+        if self.channel[index] || self.built[index] != 0 {
+            return false;
+        }
+        self.paint(index, Brush::Clear, tick);
+        self.built[index] = 1;
+        true
+    }
+
+    /// Whether the player built on this tile.
+    pub fn is_built(&self, index: usize) -> bool {
+        self.built[index] != 0
+    }
+
+    /// Tear a house down (the ground reopens to colonization).
+    pub fn demolish(&mut self, index: usize) {
+        self.built[index] = 0;
     }
 
     /// Apply a user brush stroke. Deterministic from seed + click history.
@@ -3677,6 +3723,9 @@ impl World {
         if self.channel[i] {
             out.push("Open river water — nothing roots here".to_string());
         }
+        if self.built[i] != 0 {
+            out.push("A house stands here — nothing grows on its floor".to_string());
+        }
         out.push(format!(
             "Altitude {} · {:.0} °C (site {:.0} °C){}",
             pct(self.terrain.altitude[i] as f64),
@@ -3976,6 +4025,7 @@ impl World {
                 || self.state[i] == Cell::Tree
                 || self.remains_code[i] != 0
                 || self.channel[i]
+                || self.built[i] != 0
             {
                 continue;
             }
@@ -6308,4 +6358,40 @@ mod tests {
         assert!(boreal(true) > 2.0 * boreal(false), "cold {:.2} vs warm {:.2}", boreal(true), boreal(false));
     }
 
+
+    #[test]
+    fn felling_leaves_a_logged_stump_and_timber() {
+        let mut w = bare_world(4, no_fire());
+        let i = G.middle();
+        assert_eq!(w.fell_tree(i, 10), None, "no tree, no timber");
+        w.paint(i, Brush::Tree, 0);
+        let young = w.fell_tree(i, 5).expect("a sapling yields a little");
+        assert!((1.0..2.0).contains(&young));
+        w.paint(i, Brush::Tree, 0);
+        let old = w.fell_tree(i, 400).expect("a mature tree yields more");
+        assert!(old > 3.5 && old <= 4.0);
+        assert_eq!(w.state(i), Cell::Bare);
+        let r = w.remains(i).expect("a stump remains");
+        assert!(r.tree);
+        assert_eq!(r.cause, DeathCause::Logged);
+        assert_eq!(w.deaths_total()[DeathCause::Logged as usize], 2);
+    }
+
+    #[test]
+    fn nothing_grows_on_a_house() {
+        let mut w = World::with_params(8, Params { seed_tree_p: 0.0, seed_grass_p: 0.0, grass_seed_p: 0.3, ..no_fire() });
+        let i = G.middle();
+        w.paint(i, Brush::Tree, 0);
+        assert!(w.build_house(i, 1));
+        assert!(!w.build_house(i, 1), "one house per tile");
+        assert_eq!(w.state(i), Cell::Bare, "building clears the tile");
+        w.paint_species(i, Brush::Tree, Species::Oak, 2);
+        w.paint_grass(i, GrassKind::Sod, 2);
+        for t in 2..200 {
+            w.step(t);
+            assert_eq!(w.state(i), Cell::Bare, "tick {t}: something grew in the house");
+        }
+        w.demolish(i);
+        assert!(!w.is_built(i));
+    }
 }

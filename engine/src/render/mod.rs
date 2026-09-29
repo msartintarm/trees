@@ -4,6 +4,8 @@
 pub mod camera;
 pub mod geometry;
 pub mod scene;
+pub mod sky;
+pub mod surface;
 
 #[cfg(target_arch = "wasm32")]
 pub mod gpu;
