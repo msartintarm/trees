@@ -8,8 +8,9 @@ use web_sys::HtmlCanvasElement;
 
 use crate::sim::hex::Grid;
 use super::geometry::{
-    base_mesh, bolt_mesh, cirrus_mesh, cumulonimbus_mesh, cumulus_mesh, grass_mesh_for, mushroom_mesh,
-    nimbostratus_mesh, root_mesh, sun_mesh, tile_mesh, tile_top_mesh, tree_mesh_for, MeshData, MeshVertex,
+    base_mesh, bolt_mesh, cap_mesh, cirrus_mesh, cumulonimbus_mesh, cumulus_mesh, grass_mesh_for, mushroom_mesh,
+    nimbostratus_mesh, rain_mesh, root_mesh, smoke_mesh, sun_mesh, tile_mesh, tile_top_mesh, tree_mesh_for, MeshData,
+    MeshVertex,
 };
 use super::scene::{stream, Instance, STREAM_COUNT};
 
@@ -89,6 +90,8 @@ pub struct Renderer {
     cloud_pipeline: wgpu::RenderPipeline,
     /// Translucent ground for the roots view.
     xray_pipeline: wgpu::RenderPipeline,
+    /// Rain and snow shafts.
+    rain_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     globals: wgpu::Buffer,
     bind_group: wgpu::BindGroup,
@@ -170,18 +173,29 @@ impl Renderer {
         heat: f32,
         eye: Vec<f32>,
         light_vp: Vec<f32>,
+        atmos: Vec<f32>,
         bytes: Vec<u8>,
         counts: Vec<u32>,
         roots_view: bool,
     ) {
-        let mut globals = [0f32; 44];
+        // atmos: [flash, overcast, time, wind x, wind y, wind strength,
+        // gust, haze r, haze g, haze b, haze density, fog height, fog
+        // strength, ...] (see bridge::Simulation::atmosphere).
+        let a = |k: usize| atmos.get(k).copied().unwrap_or(0.0);
+        let mut globals = [0f32; 56];
         globals[..16].copy_from_slice(&view_proj[..16]);
         globals[16..32].copy_from_slice(&light_vp[..16]);
         globals[32..35].copy_from_slice(&SUN);
+        globals[35] = a(0);
         globals[36] = alpha;
         globals[37] = light;
         globals[38] = heat;
+        globals[39] = a(1);
         globals[40..43].copy_from_slice(&eye[..3]);
+        globals[43] = a(2);
+        globals[44..48].copy_from_slice(&[a(3), a(4), a(5), a(6)]);
+        globals[48..52].copy_from_slice(&[a(7), a(8), a(9), a(10)]);
+        globals[52..56].copy_from_slice(&[a(11), a(12), a(13), a(14)]);
         self.queue.write_buffer(&self.globals, 0, bytemuck::cast_slice(&globals));
 
         let stride = std::mem::size_of::<Instance>();
@@ -242,10 +256,14 @@ impl Renderer {
         // Heat hazes and pales the sky; a cold spell deepens its blue.
         let h = heat.clamp(0.0, 1.0) as f64;
         let haze = |c: f64, warm: f64| c + (warm - c) * 0.45 * h;
+        // Overcast greys the sky. (A lightning flash is a local light in
+        // the shader — the sky itself never flashes.)
+        let oc = a(1).clamp(0.0, 1.0) as f64;
+        let storm = |c: f64, grey: f64| c + (grey - c) * 0.6 * oc;
         let sky = wgpu::Color {
-            r: haze(SKY.r, 0.72) * (0.5 + 0.5 * light as f64),
-            g: haze(SKY.g, 0.70) * (0.5 + 0.5 * light as f64),
-            b: haze(SKY.b, 0.62) * (0.55 + 0.45 * light as f64),
+            r: storm(haze(SKY.r, 0.72), 0.42) * (0.5 + 0.5 * light as f64),
+            g: storm(haze(SKY.g, 0.70), 0.45) * (0.5 + 0.5 * light as f64),
+            b: storm(haze(SKY.b, 0.62), 0.50) * (0.55 + 0.45 * light as f64),
             a: 1.0,
         };
         {
@@ -289,9 +307,14 @@ impl Renderer {
                 pass.set_pipeline(&self.xray_pipeline);
                 self.draw(&mut pass, &self.tile_top, &self.buffers[stream::GROUND], n[stream::GROUND]);
             }
-            // Translucent clouds last, low decks first (as seen from above).
+            // Precipitation shafts, then the translucent cloud volumes (low
+            // decks first, as seen from above), smoke and cap clouds.
+            pass.set_pipeline(&self.rain_pipeline);
+            self.draw(&mut pass, &self.meshes[stream::RAIN], &self.buffers[stream::RAIN], n[stream::RAIN]);
             pass.set_pipeline(&self.cloud_pipeline);
-            for k in stream::CLOUDS {
+            let mut volumes: Vec<usize> = stream::CLOUDS.to_vec();
+            volumes.extend([stream::SMOKE, stream::CAP]);
+            for k in volumes {
                 self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
             }
         }
@@ -386,7 +409,7 @@ async fn from_surface(
 
     let globals = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("globals"),
-        size: 176,
+        size: 224,
         usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -479,7 +502,7 @@ async fn from_surface(
     let instance_layout = wgpu::VertexBufferLayout {
         array_stride: std::mem::size_of::<Instance>() as u64,
         step_mode: wgpu::VertexStepMode::Instance,
-        attributes: &wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32, 6 => Float32, 7 => Float32x3, 8 => Float32, 9 => Float32x2],
+        attributes: &wgpu::vertex_attr_array![4 => Float32x3, 5 => Float32, 6 => Float32, 7 => Float32x3, 8 => Float32, 9 => Float32x2, 10 => Float32],
     };
 
     let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -602,6 +625,43 @@ async fn from_surface(
         cache: None,
     });
 
+    // Rain and snow shafts: blended, depth-tested, not depth-written.
+    let rain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("rain"),
+        layout: Some(&layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_rain"),
+            compilation_options: Default::default(),
+            buffers: &[vertex_layout.clone(), instance_layout.clone()],
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_rain"),
+            compilation_options: Default::default(),
+            targets: &[Some(wgpu::ColorTargetState {
+                format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+        }),
+        primitive: wgpu::PrimitiveState {
+            topology: wgpu::PrimitiveTopology::TriangleList,
+            cull_mode: None,
+            ..Default::default()
+        },
+        depth_stencil: Some(wgpu::DepthStencilState {
+            format: DEPTH_FORMAT,
+            depth_write_enabled: false,
+            depth_compare: wgpu::CompareFunction::Less,
+            stencil: Default::default(),
+            bias: Default::default(),
+        }),
+        multisample: Default::default(),
+        multiview: None,
+        cache: None,
+    });
+
     let shadow_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
         label: Some("shadow"),
         layout: Some(&shadow_layout),
@@ -633,13 +693,29 @@ async fn from_surface(
     let base = Mesh::upload(&device, &queue, &base_mesh(Grid::DEFAULT), "base-mesh");
     let tile_top = Mesh::upload(&device, &queue, &tile_top_mesh(), "tile-top-mesh");
     // One mesh per stream, in `scene::stream` order.
-    let mut stream_meshes: Vec<MeshData> = vec![tile_mesh()];
-    stream_meshes.extend((0..4).map(tree_mesh_for));
-    stream_meshes.extend((0..4).map(grass_mesh_for));
-    stream_meshes.push(mushroom_mesh());
-    stream_meshes.extend([cumulus_mesh(), cumulonimbus_mesh(), nimbostratus_mesh(), cirrus_mesh()]);
-    stream_meshes.extend([bolt_mesh(), root_mesh(), sun_mesh()]);
-    assert_eq!(stream_meshes.len(), STREAM_COUNT);
+    let stream_meshes: Vec<MeshData> = (0..STREAM_COUNT)
+        .map(|k| {
+            if let Some(sp) = stream::TREES.iter().position(|&t| t == k) {
+                return tree_mesh_for(sp);
+            }
+            if let Some(g) = stream::GRASS.iter().position(|&t| t == k) {
+                return grass_mesh_for(g);
+            }
+            if let Some(c) = stream::CLOUDS.iter().position(|&t| t == k) {
+                return [cumulus_mesh(), cumulonimbus_mesh(), nimbostratus_mesh(), cirrus_mesh()][c].clone();
+            }
+            match k {
+                stream::GROUND => tile_mesh(),
+                stream::MUSHROOMS => mushroom_mesh(),
+                stream::BOLTS => bolt_mesh(),
+                stream::ROOTS => root_mesh(),
+                stream::SUN => sun_mesh(),
+                stream::RAIN => rain_mesh(),
+                stream::SMOKE => smoke_mesh(),
+                _ => cap_mesh(),
+            }
+        })
+        .collect();
     let meshes: Vec<Mesh> = stream_meshes.iter().map(|m| Mesh::upload(&device, &queue, m, "stream-mesh")).collect();
     let buffers: Vec<InstanceBuffer> =
         (0..STREAM_COUNT).map(|_| InstanceBuffer::new(&device, 1024 * 44, "instances")).collect();
@@ -656,6 +732,7 @@ async fn from_surface(
         pipeline,
         cloud_pipeline,
         xray_pipeline,
+        rain_pipeline,
         shadow_pipeline,
         globals,
         bind_group,

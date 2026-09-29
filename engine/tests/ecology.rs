@@ -387,6 +387,7 @@ fn absurd_parameters_behave_exactly_like_their_sanitized_form() {
         physiology: -1.0,
         seasons: 9.0,
         cloud_dynamics: f64::NAN,
+        biomes: 3.0,
         seed_tree_p: 2.0,
         seed_grass_p: -1.0,
         width: 64,

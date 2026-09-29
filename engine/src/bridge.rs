@@ -19,6 +19,11 @@ const DT: f64 = 0.1;
 /// Past this the clock drops the backlog and the sim degrades to slow-motion.
 const MAX_CATCHUP_TICKS: u32 = 64;
 
+/// Real-time length of a lightning flash, and the minimum gap between
+/// flashes shown.
+const FLASH_MS: f64 = 140.0;
+const FLASH_GAP_MS: f64 = 450.0;
+
 /// Wall-clock milliseconds per frame the sim may spend on catch-up ticks;
 /// past it the clock drops the backlog (big maps at high speed degrade to
 /// slow motion instead of freezing the page).
@@ -49,6 +54,18 @@ pub struct Simulation {
     frame_counts: Vec<u32>,
     /// The roots view toggle.
     roots_view: bool,
+    /// The biome overlay toggle.
+    biome_view: bool,
+    /// Wall-clock time (ms) of the last lightning flash shown: a flash
+    /// lasts FLASH_MS of real time and at most one shows per FLASH_GAP_MS,
+    /// so fast playback flickers instead of strobing white.
+    flash_at: f64,
+    /// The tick of the last strike shown (a paused world doesn't re-flash).
+    flash_tick: u64,
+    /// Where that strike hit (world x, y): the flash is a local light.
+    flash_pos: [f64; 2],
+    /// Lightning flashes on/off (a comfort setting).
+    flashes: bool,
     /// Smoothed wall-clock cost of one tick, ms.
     tick_ms: f64,
     /// Smoothed achieved speed (sim seconds per real second).
@@ -69,6 +86,11 @@ impl Simulation {
             frame_bytes: Vec::new(),
             frame_counts: Vec::new(),
             roots_view: false,
+            biome_view: false,
+            flash_at: -1e9,
+            flash_tick: u64::MAX,
+            flash_pos: [0.0, 0.0],
+            flashes: true,
             tick_ms: 1.0,
             actual_speed: 1.0,
         }
@@ -212,6 +234,7 @@ impl Simulation {
         physiology: f64,
         seasons: f64,
         cloud_dynamics: f64,
+        biomes: f64,
         seed_tree_p: f64,
         seed_grass_p: f64,
         width: u32,
@@ -247,6 +270,7 @@ impl Simulation {
             physiology,
             seasons,
             cloud_dynamics,
+            biomes,
             seed_tree_p,
             seed_grass_p,
             width,
@@ -396,6 +420,8 @@ impl Simulation {
             season_amp,
             roots: self.roots_view,
             heat: self.heat(),
+            biomes: self.biome_view,
+            flashes: self.flashes,
         };
         let frame = build_view(&self.world, self.clock.tick(), self.clock.alpha() as f32, &view);
         let (bytes, counts) = frame.pack();
@@ -417,6 +443,104 @@ impl Simulation {
     /// and a bigger, gold sun when high.
     pub fn heat(&self) -> f32 {
         ((self.world.sun() - 0.2) / 0.6).clamp(0.0, 1.0) as f32
+    }
+
+    /// The atmosphere for the renderer, 16 floats: [flash, overcast, time,
+    /// wind x, wind y, wind strength, gust, haze r, haze g, haze b, haze
+    /// density, fog height, fog strength, flash x, flash y, 0] — the flash
+    /// is a local light around the strike, not a whole-scene brightening. Haze follows the
+    /// weather — clear blue after rain, milky and warm in heat and drought,
+    /// grey under overcast — and valley fog pools after wet, cool, still
+    /// spells.
+    pub fn atmosphere(&mut self) -> Vec<f32> {
+        let now = now_ms();
+        let tick = self.clock.tick();
+        if self.flashes
+            && self.world.flash() >= 1.0
+            && tick != self.flash_tick
+            && now - self.flash_at > FLASH_GAP_MS
+        {
+            self.flash_at = now;
+            self.flash_tick = tick;
+            if let Some(p) = self.world.last_strike() {
+                self.flash_pos = p;
+            }
+        }
+        let flash = if self.flashes {
+            (1.0 - (now - self.flash_at) / FLASH_MS).clamp(0.0, 1.0) as f32
+        } else {
+            0.0
+        };
+        let w = &self.world;
+        let overcast = w.overcast();
+        let (dir, speed) = w.wind_at(self.clock.tick());
+        let strength = (speed / 0.45).min(1.0);
+        let heat = self.heat() as f64;
+        let moisture = w.moisture();
+        let n = w.grid().cells();
+        let wet = (0..n).step_by(17).filter(|&i| w.wet_ratio(i) > 0.0).count() as f64 / (n / 17).max(1) as f64;
+        let dry = (1.0 - moisture).clamp(0.0, 1.0);
+        let lerp = |a: [f64; 3], b: [f64; 3], t: f64| [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+        let clear = [0.60, 0.70, 0.80];
+        let milky = [0.82, 0.76, 0.62];
+        let grey = [0.52, 0.54, 0.58];
+        let haze = lerp(lerp(clear, milky, heat * dry), grey, overcast);
+        let density = (0.0008 + 0.0028 * heat * dry + 0.0015 * overcast - 0.0006 * wet).max(0.0002);
+        let fog = (((moisture - 0.5) * 2.5).clamp(0.0, 1.0) * ((0.55 - w.sun()) * 3.0).clamp(0.0, 1.0) * (1.0 - strength)
+            + 0.4 * wet * (1.0 - strength))
+            .min(1.0);
+        vec![
+            flash,
+            overcast as f32,
+            (now_ms() / 1000.0 % 10_000.0) as f32,
+            dir[0] as f32,
+            dir[1] as f32,
+            strength as f32,
+            (0.6 * overcast) as f32,
+            haze[0] as f32,
+            haze[1] as f32,
+            haze[2] as f32,
+            density as f32,
+            (1.2 + 2.5 * fog) as f32,
+            (fog * w.params().climate_zones.max(w.params().terrain)) as f32,
+            self.flash_pos[0] as f32,
+            self.flash_pos[1] as f32,
+            0.0,
+        ]
+    }
+
+    /// Turn lightning flashes on or off (comfort / photosensitivity).
+    pub fn set_flashes(&mut self, on: bool) {
+        self.flashes = on;
+    }
+
+    /// Tint the ground by climate biome.
+    pub fn set_biome_view(&mut self, on: bool) {
+        self.biome_view = on;
+    }
+
+    /// Share of the map in each biome (Biome order: wetland, tundra,
+    /// boreal forest, temperate forest, grassland, savanna, desert).
+    pub fn biome_shares(&self) -> Vec<f32> {
+        let n = self.world.grid().cells();
+        let mut c = vec![0.0f32; crate::sim::world::BIOME_COUNT];
+        for i in 0..n {
+            c[self.world.biome(i) as usize] += 1.0;
+        }
+        c.iter().map(|x| x / n as f32).collect()
+    }
+
+    /// A sample of tiles for the Whittaker chart: flat triples of (site
+    /// temperature index, site water, biome index).
+    pub fn biome_samples(&self) -> Vec<f32> {
+        let n = self.world.grid().cells();
+        let step = (n / 600).max(1);
+        let mut out = Vec::with_capacity(3 * (n / step + 1));
+        for i in (0..n).step_by(step) {
+            let (t, w) = self.world.site_climate(i);
+            out.extend([t as f32, w as f32, self.world.biome(i) as u8 as f32]);
+        }
+        out
     }
 
     /// Show the root systems under glass ground.

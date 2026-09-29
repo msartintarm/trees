@@ -45,6 +45,7 @@ export type Sim = {
     physiology: number,
     seasons: number,
     cloudDynamics: number,
+    biomes: number,
     seedTreeP: number,
     seedGrassP: number,
     width: number,
@@ -82,6 +83,11 @@ export type Sim = {
   deaths_recent(): Float32Array;
   cloud_counts(): Uint32Array;
   cloud_events(): Uint32Array;
+  atmosphere(): Float32Array;
+  set_biome_view(on: boolean): void;
+  set_flashes(on: boolean): void;
+  biome_shares(): Float32Array;
+  biome_samples(): Float32Array;
 };
 
 export type Renderer = {
@@ -96,6 +102,7 @@ export type Renderer = {
     heat: number,
     eye: Float32Array,
     lightVp: Float32Array,
+    atmos: Float32Array,
     bytes: Uint8Array,
     counts: Uint32Array,
     rootsView: boolean,

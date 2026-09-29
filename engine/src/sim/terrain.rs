@@ -58,6 +58,13 @@ pub struct Terrain {
     pub rain: Vec<f32>,
     /// Upstream drainage area in tiles (rain-weighted), ≥ 1.
     pub flow: Vec<f32>,
+    /// Map-scale climate gradients (biomes): a north–south position, 0
+    /// (warm south) .. 1 (cold north), and a coast-to-interior position,
+    /// 0 (wet coast) .. 1 (dry interior); `gradient_amp` scales them with
+    /// map size like the altitude range.
+    pub latitude: Vec<f32>,
+    pub interior: Vec<f32>,
+    pub gradient_amp: f32,
 }
 
 /// Smooth hash-lattice value noise in world coordinates.
@@ -197,7 +204,20 @@ impl Terrain {
         let height: Vec<f64> =
             (0..pos.len()).map(|i| elevation[i] as f64 * RELIEF + altitude[i] * MACRO_PHYS).collect();
         let flow = drainage(grid, &height, &rain);
+        // The coast lies on a seed-chosen side (east or west).
+        let coast_east = rng::uniform01(seed, 7, 0, Stream::Terrain) < 0.5;
+        let latitude: Vec<f32> = pos.iter().map(|&(_, y)| (y / max_y.max(1e-9)) as f32).collect();
+        let interior: Vec<f32> = pos
+            .iter()
+            .map(|&(x, _)| {
+                let f = (x / max_x.max(1e-9)) as f32;
+                if coast_east { 1.0 - f } else { f }
+            })
+            .collect();
         Terrain {
+            latitude,
+            interior,
+            gradient_amp: amp as f32,
             elevation,
             water,
             heat,

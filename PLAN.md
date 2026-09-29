@@ -377,7 +377,30 @@ damped to static-comparable cloud counts and rain totals. Render morphs
 between genus meshes (opacity cross-fade + altitude glide), fades drying
 clouds; HUD sky census + weather ticker. Legacy map: dynamics off.
 
+## P28 — Weather visuals, biomes, new species ✅
+Sim: climate gradients (latitude cooling, coast-to-interior drying,
+scaled with map size), five biome plants (spruce, birch, creosote,
+reeds, cactus — gated by `biomes`, legacy seed pools preserved),
+suitability-weighted founders (without it the new specialists never met
+their climates: spruce 0, acacia 512 → 58), snowfall → snowpack →
+meltwater and melt freshets, pyrocumulus, strike and in-cloud flashes,
+Whittaker biome classification. Render: rain/snow shafts with virga (own
+pipeline, animated streaks), branching bolts, real-time flash (decays in
+wall-clock time, rate-limited, edge-triggered — the first cut strobed the
+sky white at 32× and even while paused), wind sway, heat shimmer, storm
+light, conditions-dependent haze, valley fog, silver linings, wet gloss
+and drought cracks (new Instance field), smoke plumes, cap clouds, biome
+overlay; stream layout now derived from species/grass counts. A missing
+vertex attribute (the new gloss) panicked the renderer at startup — now
+guarded by a native shader↔layout test. UI: 7 trees / 6 grasses,
+🗺 Biomes overlay + legend + Whittaker chart, regional presets.
+Result (256², seed 7): γ 4.92 → 5.90 with biomes; deserts ~9% of the
+map with cactus and creosote, reed marshes, boreal spruce–pine–birch.
+Known: no rainbows — physically impossible with the fixed 56° sun.
+
 ## Ideas / not done
+- A moving sun (day/season elevation) — would allow rainbows and long
+  evening shadows
 - True speciation: reproductive isolation between diverged lineages (currently traits blend freely)
 - Pioneer persistence in closed forests (gap dynamics beyond windthrow)
 - Herbivores (browsers) for acacia's thorn/ant defenses

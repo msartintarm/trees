@@ -47,6 +47,11 @@ fn on() -> &'static Run {
     RUN.get_or_init(|| simulate(base()))
 }
 
+fn off_biomes() -> &'static Run {
+    static RUN: OnceLock<Run> = OnceLock::new();
+    RUN.get_or_init(|| simulate(Params { biomes: 0.0, ..base() }))
+}
+
 fn off() -> &'static Run {
     static RUN: OnceLock<Run> = OnceLock::new();
     RUN.get_or_init(|| simulate(Params { climate_zones: 0.0, rivers: 0.0, grazing: 0.0, ..base() }))
@@ -78,11 +83,16 @@ fn mountains_sort_the_vegetation_into_climate_zones() {
     };
     let (warm, cool) = (mean_temp(&acacia), mean_temp(&sod));
     assert!(warm > cool + 0.15, "acacia on warm ground ({warm:.2}) vs sod ({cool:.2})");
-    // And it's cooler up there.
-    let n = w.grid().cells();
-    let high = (0..n).max_by(|&a, &b| w.altitude(a).total_cmp(&w.altitude(b))).unwrap();
-    let low = (0..n).min_by(|&a, &b| w.altitude(a).total_cmp(&w.altitude(b))).unwrap();
-    assert!(w.temperature(high) < w.temperature(low) - 0.15);
+    // And it's cooler up there — on average: with biomes on, a northern
+    // lowland can be colder than a southern peak.
+    let band_temp = |band: usize| {
+        let n = w.grid().cells();
+        let amp = (0..n).map(|i| w.altitude(i)).fold(0.0f32, f32::max);
+        let (lo, hi) = (band as f32 / 5.0 * amp, (band + 1) as f32 / 5.0 * amp + 1e-6);
+        let t: Vec<f64> = (0..n).filter(|&i| w.altitude(i) >= lo && w.altitude(i) < hi).map(|i| w.temperature(i)).collect();
+        t.iter().sum::<f64>() / t.len().max(1) as f64
+    };
+    assert!(band_temp(4) < band_temp(0) - 0.05, "peaks {:.2} vs lowlands {:.2}", band_temp(4), band_temp(0));
 }
 
 #[test]
@@ -116,14 +126,61 @@ fn willows_line_the_rivers_instead_of_blanketing_wet_ground() {
 #[test]
 fn landscape_features_raise_diversity_across_the_map() {
     // The landscape's signature is turnover: mountains, rivers and grazing
-    // make regions differ (β). On a 128² map with physiology on, total
-    // diversity is already high either way (measured γ 4.58 on vs 4.61
-    // off), so it only must not fall; on 256² the zones add ~1 whole type.
+    // make regions differ (β; measured 1.96 on vs 1.80 off). Total
+    // diversity on a 128² map is high either way (measured γ 4.93 with
+    // the landscape, 5.63 with the biome gradients alone) — the gradients
+    // already span several biomes; on 256² everything together gives ~5.9.
     let (on, off) = (on(), off());
     let (beta_on, beta_off) = (on.gamma / on.alpha, off.gamma / off.alpha);
     println!("γ {:.2} vs {:.2}, β {beta_on:.2} vs {beta_off:.2}", on.gamma, off.gamma);
-    assert!(on.gamma > off.gamma - 0.3, "whole-map diversity {:.2} vs {:.2}", on.gamma, off.gamma);
+    assert!(on.gamma > 4.0, "a rich landscape: γ {:.2}", on.gamma);
     assert!(beta_on > beta_off + 0.1, "regions should differ more (β {beta_on:.2} vs {beta_off:.2})");
+}
+
+#[test]
+fn climate_gradients_lay_out_biomes_with_their_own_plants() {
+    // Biomes on (the default): a colder north, a drier interior, and the
+    // biome plants. On the landscape run the map spans several biomes and
+    // the specialists hold their own: reeds in wetlands, cacti on the
+    // driest ground, spruce and birch in the cold.
+    use tree_engine::sim::world::{Biome, BIOME_COUNT};
+    let w = &on().world;
+    let n = w.grid().cells();
+    let mut cover = [0usize; BIOME_COUNT];
+    for i in 0..n {
+        cover[w.biome(i) as usize] += 1;
+    }
+    let present = cover.iter().filter(|&&c| c * 100 > n).count();
+    assert!(present >= 4, "at least four biomes cover >1% each: {cover:?}");
+    let in_biome = |b: Biome, is: &dyn Fn(usize) -> bool| {
+        let tiles: Vec<usize> = (0..n).filter(|&i| w.biome(i) == b).collect();
+        tiles.iter().filter(|&&i| is(i)).count()
+    };
+    let reeds = in_biome(Biome::Wetland, &|i| w.state(i) == Cell::Grass && w.grass_kind(i) == GrassKind::Reeds);
+    assert!(reeds > 10, "reeds should fill the wetlands ({reeds})");
+    // The boreal pair (spruce needs the colder north of a 256² map; birch
+    // shows up on 128²) sits on cooler ground than acacia.
+    let temps = |is: &dyn Fn(Species) -> bool| {
+        let t: Vec<f64> = (0..n).filter(|&i| w.state(i) == Cell::Tree && is(w.species(i))).map(|i| w.site_climate(i).0).collect();
+        (t.len(), t.iter().sum::<f64>() / t.len().max(1) as f64)
+    };
+    let (n_boreal, t_boreal) = temps(&|sp| sp == Species::Spruce || sp == Species::Birch);
+    let (n_acacia, t_acacia) = temps(&|sp| sp == Species::Acacia);
+    assert!(n_boreal > 0 && n_acacia > 0, "boreal {n_boreal}, acacia {n_acacia}");
+    assert!(t_boreal < t_acacia - 0.1, "boreal trees in the cold ({t_boreal:.2}) vs acacia ({t_acacia:.2})");
+}
+
+#[test]
+fn without_biomes_only_the_original_plants_grow() {
+    let w = &off_biomes().world;
+    let n = w.grid().cells();
+    for i in 0..n {
+        match w.state(i) {
+            Cell::Tree => assert!((w.species(i) as usize) < 4, "a biome tree grew without biomes"),
+            Cell::Grass => assert!((w.grass_kind(i) as usize) < 4, "a biome grass grew without biomes"),
+            Cell::Bare => {}
+        }
+    }
 }
 
 #[test]

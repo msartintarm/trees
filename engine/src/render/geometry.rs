@@ -17,6 +17,7 @@ pub struct MeshVertex {
     pub color_weight: f32,
 }
 
+#[derive(Clone)]
 pub struct MeshData {
     pub vertices: Vec<MeshVertex>,
     pub indices: Vec<u32>,
@@ -126,6 +127,10 @@ pub fn tile_mesh() -> MeshData {
 }
 
 const TRUNK_COLOR: [f32; 3] = [0.36, 0.25, 0.15];
+/// Cattail seed heads (brown).
+const CATTAIL: [f32; 3] = [0.40, 0.26, 0.14];
+/// Birch's chalk-white bark.
+const BIRCH_BARK: [f32; 3] = [0.88, 0.86, 0.82];
 
 /// One silhouette per species (canopies take the instance color, trunks are
 /// baked brown): flat-top acacia, broad oak, spired pine, drooping willow.
@@ -150,6 +155,32 @@ pub fn tree_mesh_for(species: usize) -> MeshData {
             cylinder(&mut m, 10, 0.0, 0.0, 0.13, 0.0, 0.95, TRUNK_COLOR, 1.0);
             cylinder(&mut m, 18, 0.0, 0.0, 0.78, 0.55, 1.45, [1.0; 3], 0.0);
             cone(&mut m, 18, 0.0, 0.0, 0.85, 1.40, 2.05, [1.0; 3], 0.0);
+        }
+        4 => {
+            // Spruce: a dense, narrow, dark spire of many tiers to the ground.
+            cylinder(&mut m, 8, 0.0, 0.0, 0.09, 0.0, 0.35, TRUNK_COLOR, 1.0);
+            for (k, r) in [0.62f32, 0.54, 0.46, 0.38, 0.30, 0.22].iter().enumerate() {
+                let z = 0.2 + 0.42 * k as f32;
+                cone(&mut m, 14, 0.0, 0.0, *r, z, z + 0.72, [1.0; 3], 0.0);
+            }
+        }
+        5 => {
+            // Birch: a slender white trunk and a small, airy, open crown.
+            cylinder(&mut m, 8, 0.0, 0.0, 0.08, 0.0, 1.7, BIRCH_BARK, 1.0);
+            for (x, y, z, r) in [(0.0f32, 0.0f32, 1.5f32, 0.42f32), (0.25, 0.1, 1.2, 0.3), (-0.22, -0.12, 1.3, 0.3), (0.05, -0.05, 1.9, 0.3)] {
+                cone(&mut m, 12, x, y, r, z, z + 0.55, [1.0; 3], 0.0);
+                cone(&mut m, 12, x, y, r, z, z - 0.25, [1.0; 3], 0.0);
+            }
+        }
+        6 => {
+            // Creosote: a low, rounded, multi-stemmed desert shrub.
+            for (x, y) in [(0.0f32, 0.0f32), (0.28, 0.12), (-0.24, 0.18), (0.05, -0.28)] {
+                cylinder(&mut m, 5, x, y, 0.03, 0.0, 0.35, TRUNK_COLOR, 1.0);
+            }
+            for (x, y, r) in [(0.0f32, 0.0f32, 0.42f32), (0.3, 0.15, 0.3), (-0.26, 0.2, 0.3), (0.06, -0.3, 0.28)] {
+                cone(&mut m, 10, x, y, r, 0.25, 0.7, [1.0; 3], 0.0);
+                cone(&mut m, 10, x, y, r, 0.25, 0.1, [1.0; 3], 0.0);
+            }
         }
         _ => {
             // Acacia: tall bare trunk, flat umbrella crown.
@@ -188,6 +219,22 @@ pub fn grass_mesh_for(kind: usize) -> MeshData {
             // Sedge: a clump of stiff upright spears.
             for (cx, cy, h) in [(0.0f32, 0.0f32, 0.46f32), (0.2, 0.12, 0.36), (-0.18, 0.14, 0.40), (0.02, -0.22, 0.34)] {
                 cone(&mut m, 5, cx, cy, 0.10, 0.0, h, [1.0; 3], 0.0);
+            }
+        }
+        4 => {
+            // Reeds: a dense bed of tall thin spears with cattail heads.
+            for (cx, cy, h) in [(0.0f32, 0.0f32, 0.95f32), (0.22, 0.1, 0.8), (-0.2, 0.16, 0.85), (0.1, -0.24, 0.75), (-0.14, -0.18, 0.9), (0.28, -0.1, 0.7)] {
+                cone(&mut m, 4, cx, cy, 0.05, 0.0, h, [1.0; 3], 0.0);
+                cylinder(&mut m, 5, cx, cy, 0.05, h * 0.62, h * 0.8, CATTAIL, 1.0);
+            }
+        }
+        5 => {
+            // Cactus: a columnar stem with a pair of upturned arms.
+            cylinder(&mut m, 8, 0.0, 0.0, 0.12, 0.0, 0.75, [1.0; 3], 0.0);
+            cone(&mut m, 8, 0.0, 0.0, 0.12, 0.75, 0.85, [1.0; 3], 0.0);
+            for (x, z0, z1) in [(0.22f32, 0.3f32, 0.6f32), (-0.2, 0.4, 0.66)] {
+                cylinder(&mut m, 6, x, 0.0, 0.07, z0, z1, [1.0; 3], 0.0);
+                cone(&mut m, 6, x, 0.0, 0.07, z1, z1 + 0.06, [1.0; 3], 0.0);
             }
         }
         3 => {
@@ -336,6 +383,46 @@ pub fn cirrus_mesh() -> MeshData {
     m
 }
 
+fn quad(mesh: &mut MeshData, p: [[f32; 3]; 4], n: [f32; 3]) {
+    let v: Vec<u32> = p.iter().map(|&q| mesh.push(q, n, [1.0; 3], 0.0)).collect();
+    mesh.indices.extend([v[0], v[1], v[2], v[0], v[2], v[3]]);
+}
+
+/// A precipitation shaft: a unit-radius curtain from the cloud base
+/// (z = 0) to z = −1 — an open cylinder plus three crossing sheets so it
+/// reads as a volume of falling streaks from any side. The instance sets
+/// its radius and length (see scene.wgsl vs_rain).
+pub fn rain_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    cylinder(&mut m, 16, 0.0, 0.0, 1.0, -1.0, 0.0, [1.0; 3], 0.0);
+    for k in 0..3 {
+        let a = std::f32::consts::PI * k as f32 / 3.0;
+        let (c, s) = (a.cos(), a.sin());
+        quad(&mut m, [[-c, -s, -1.0], [c, s, -1.0], [c, s, 0.0], [-c, -s, 0.0]], [-s, c, 0.0]);
+    }
+    m
+}
+
+/// A smoke plume rising from a fire and leaning downwind (+x, turned to
+/// the wind): puffs growing and spreading as they rise.
+pub fn smoke_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    let grey_lo = [0.30, 0.29, 0.28];
+    let grey_hi = [0.62, 0.60, 0.58];
+    for (k, (x, z, r)) in [(0.0f32, 0.6f32, 0.45f32), (0.5, 1.6, 0.7), (1.3, 2.7, 1.0), (2.4, 3.8, 1.35), (3.8, 4.8, 1.7)].iter().enumerate() {
+        let _ = k;
+        ellipsoid(&mut m, [*x, 0.0, *z], [*r, *r, *r * 0.8], -1.5, grey_lo, grey_hi, 0.9);
+    }
+    m
+}
+
+/// An orographic cap cloud: one smooth, flattened lens sitting on a peak.
+pub fn cap_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    ellipsoid(&mut m, [0.0, 0.0, 0.0], [6.0, 4.5, 1.1], -1.5, [0.78, 0.79, 0.83], [1.0, 1.0, 1.0], 0.85);
+    m
+}
+
 /// The sun, drawn over the landscape along the light direction: a sphere
 /// whose size and glow the instance sets from the heat.
 pub fn sun_mesh() -> MeshData {
@@ -361,9 +448,16 @@ pub fn root_mesh() -> MeshData {
 /// A lightning bolt: two thin offset segments (a kink) from ground to cloud
 /// base, baked over-bright so shading can't dim it.
 pub fn bolt_mesh() -> MeshData {
+    // A jagged main channel (offset vertical segments) with forked
+    // side branches, like a real cloud-to-ground stroke.
     let mut m = MeshData::new();
-    cylinder(&mut m, 4, 0.35, 0.22, 0.09, 0.0, 3.6, BOLT_GLOW, 1.0);
-    cylinder(&mut m, 4, 0.0, 0.0, 0.11, 3.3, 7.6, BOLT_GLOW, 1.0);
+    let main = [(0.0f32, 0.0f32, 7.6f32, 6.2f32), (0.3, 0.2, 6.3, 4.6), (-0.1, 0.45, 4.7, 3.1), (0.35, 0.3, 3.2, 1.5), (0.1, 0.05, 1.6, 0.0)];
+    for (x, y, z1, z0) in main {
+        cylinder(&mut m, 4, x, y, 0.1, z0, z1 + 0.05, BOLT_GLOW, 1.0);
+    }
+    for (x, y, z1, z0) in [(-0.45f32, 0.1f32, 6.0f32, 5.0f32), (0.8, 0.5, 4.5, 3.6), (-0.5, 0.7, 3.0, 2.2), (0.9, 0.1, 2.4, 1.8)] {
+        cylinder(&mut m, 4, x, y, 0.05, z0, z1, BOLT_GLOW, 1.0);
+    }
     m
 }
 
@@ -385,11 +479,14 @@ mod tests {
     #[test]
     fn meshes_are_well_formed() {
         check(&tile_mesh());
-        for sp in 0..4 {
+        for sp in 0..crate::sim::world::SPECIES_COUNT {
             check(&tree_mesh_for(sp));
         }
-        for k in 0..4 {
+        for k in 0..crate::sim::world::GRASS_KIND_COUNT {
             check(&grass_mesh_for(k));
+        }
+        for m in [rain_mesh(), smoke_mesh(), cap_mesh()] {
+            check(&m);
         }
         check(&base_mesh(crate::sim::hex::Grid::LEGACY));
         check(&mushroom_mesh());

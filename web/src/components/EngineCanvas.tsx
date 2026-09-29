@@ -19,6 +19,7 @@ import {
 } from "../lib/camera.ts";
 import { cloudsText, deathsText, newestCloudEvent, statsText } from "../lib/hud.ts";
 import {
+  BIOMES,
   GRASS_NAMES,
   SPECIES_NAMES,
   type Brush,
@@ -48,6 +49,23 @@ const SPEEDS = [0.05, 0.5, 1, 2, 8, 32];
 type Tool = Brush | "inspect";
 const DEFAULT_SEED = 7;
 
+/** The Whittaker chart: sampled tiles plotted by site temperature (x) and
+ * water (y), colored by biome. */
+function drawWhittaker(canvas: HTMLCanvasElement | null, samples: number[]): void {
+  const ctx = canvas?.getContext("2d");
+  if (!canvas || !ctx) return;
+  const { width: w, height: h } = canvas;
+  ctx.fillStyle = "rgba(10, 14, 18, 0.9)";
+  ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = "rgba(255, 255, 255, 0.25)";
+  ctx.strokeRect(0.5, 0.5, w - 1, h - 1);
+  for (let k = 0; k + 2 < samples.length; k += 3) {
+    const [t, water, b] = [samples[k], samples[k + 1], samples[k + 2]];
+    ctx.fillStyle = BIOMES[b]?.color ?? "#fff";
+    ctx.fillRect(4 + t * (w - 8), h - 4 - Math.min(water, 1) * (h - 8), 2, 2);
+  }
+}
+
 export default function EngineCanvas() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sessionRef = useRef<Session | null>(null);
@@ -58,6 +76,12 @@ export default function EngineCanvas() {
   const tickerRef = useRef<HTMLDivElement | null>(null);
   const [inspectText, setInspectText] = useState<string | null>(null);
   const [rootsView, setRootsView] = useState(false);
+  const [biomeView, setBiomeView] = useState(false);
+  const [flashes, setFlashes] = useState(true);
+  const biomeViewRef = useRef(false);
+  biomeViewRef.current = biomeView;
+  const chartRef = useRef<HTMLCanvasElement | null>(null);
+  const [biomeShares, setBiomeShares] = useState<number[]>([]);
   const snapshotRef = useRef<StatsSnapshot | null>(null);
 
   const [error, setError] = useState<string | null>(null);
@@ -90,6 +114,7 @@ export default function EngineCanvas() {
 
     const initial = backingSize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio);
     let lastEvents: number[] | null = null;
+    let sharesAt = 0;
     let tickerShownAt = 0;
     const session = createSession(
       canvas,
@@ -101,6 +126,13 @@ export default function EngineCanvas() {
           if (hudRef.current) hudRef.current.textContent = statsText(f.snapshot);
           if (deathsRef.current) deathsRef.current.textContent = deathsText(f.snapshot);
           if (weatherRef.current) weatherRef.current.textContent = cloudsText(f.snapshot);
+          if (biomeViewRef.current && f.snapshot.biomeSamples.length) {
+            drawWhittaker(chartRef.current, f.snapshot.biomeSamples);
+            if (performance.now() - sharesAt > 1000) {
+              sharesAt = performance.now();
+              setBiomeShares(f.snapshot.biomeShares);
+            }
+          }
           // Weather ticker: announce each cloud transition for a few seconds.
           const event = newestCloudEvent(lastEvents, f.snapshot.cloudEvents);
           lastEvents = f.snapshot.cloudEvents;
@@ -307,6 +339,26 @@ export default function EngineCanvas() {
           >
             🌱 Roots
           </button>
+          <button
+            className={biomeView ? styles.active : ""}
+            title="tint the ground by climate biome, with a legend and a Whittaker chart"
+            onClick={() => {
+              send({ type: "biomeView", on: !biomeView });
+              setBiomeView(!biomeView);
+            }}
+          >
+            🗺 Biomes
+          </button>
+          <button
+            className={flashes ? styles.active : ""}
+            title="lightning flashes (a local glow around each strike); turn off to avoid any flashing"
+            onClick={() => {
+              send({ type: "flashes", on: !flashes });
+              setFlashes(!flashes);
+            }}
+          >
+            ⚡ Flashes
+          </button>
         </div>
         <div className={styles.row}>
           <span className={styles.label}>Grass</span>
@@ -403,6 +455,20 @@ export default function EngineCanvas() {
         <div ref={tickerRef} className={styles.ticker} />
         <div ref={deathsRef} className={styles.deaths} />
       </div>
+      {biomeView && (
+        <div className={styles.biomes}>
+          <div className={styles.inspectTitle}>Biomes</div>
+          {BIOMES.map((b, k) => (
+            <div key={b.name} className={styles.legendRow}>
+              <span className={styles.swatch} style={{ background: b.color }} />
+              {b.name}
+              {biomeShares[k] !== undefined && <span className={styles.share}>{Math.round(biomeShares[k] * 100)}%</span>}
+            </div>
+          ))}
+          <canvas ref={chartRef} width={200} height={140} className={styles.chart} />
+          <div className={styles.hint}>Whittaker chart: temperature → · water ↑</div>
+        </div>
+      )}
       {inspectText && (
         <div className={styles.inspect}>
           <button className={styles.close} onClick={() => setInspectText(null)} aria-label="close">

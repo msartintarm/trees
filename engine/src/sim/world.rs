@@ -334,6 +334,28 @@ pub const WET_ROT: f64 = 4.0;
 /// Deciduous canopies are bare through spring: the understory beneath
 /// them gets this much of the shade back.
 pub const DECID_RELIEF: f64 = 0.35;
+/// Biomes (see Params): the latitude gradient cools the north by up to
+/// LAT_GRADIENT (temperature index, north edge vs south), and the interior
+/// dries by up to COAST_GRADIENT (moisture) — both scaled with map size.
+pub const BIOMES: f64 = 1.0;
+pub const LAT_GRADIENT: f64 = 0.45;
+pub const COAST_GRADIENT: f64 = 0.5;
+/// Snow: precipitation falls as snow below SNOW_PRECIP_T, adding SNOWFALL
+/// to the snowpack (0..255) per tick; the pack melts above MELT_T at
+/// MELT_RATE per tick per 0.1 of warmth, wetting the ground, and a big
+/// melt swells the rivers (FLOOD_MELT × melted fraction of the map).
+pub const SNOW_PRECIP_T: f64 = 0.28;
+pub const SNOWFALL: u8 = 12;
+pub const MELT_T: f64 = 0.34;
+pub const MELT_RATE: f64 = 6.0;
+pub const FLOOD_MELT: f64 = 40.0;
+/// Fire clouds: a fire burning this many tiles can loft a pyrocumulus.
+pub const PYRO_TILES: usize = 40;
+pub const PYRO_P: f64 = 0.05;
+/// Lightning flashes: ticks a storm glows after a ground strike, and the
+/// per-tick chance a grown thunderhead flashes internally.
+pub const FLASH_TICKS: u8 = 3;
+pub const INTRACLOUD_P: f64 = 0.12;
 /// Dynamic clouds (see Params). Water per cloud is 0..~1.2 (a full
 /// thunderhead). Per tick: evaporation from the ground below (moist soil,
 /// groundwater, rivers) and orographic lift on windward slopes add water;
@@ -500,6 +522,10 @@ pub struct Storm {
     /// progressed (1 = fully its current genus).
     pub from: CloudKind,
     pub morph: f32,
+    /// Ticks left of a ground-strike flash (lights the whole scene) and of
+    /// an in-cloud flash (lights the thunderhead from inside).
+    pub flash: u8,
+    pub glow: u8,
 }
 
 /// Seed-rain kernel weight by hex distance from a mature tree: the
@@ -595,6 +621,10 @@ pub struct Params {
     /// Phenology: deciduous canopies let spring light through to the
     /// understory (and show the seasons at slow speeds). 0 = none.
     pub seasons: f64,
+    /// Biomes: map-scale climate gradients (colder north, drier interior)
+    /// and the biome-specific plants (spruce, birch, creosote, reeds,
+    /// cactus). 0 = the original four trees and grasses, no gradients.
+    pub biomes: f64,
     /// Dynamic clouds: each cloud carries water, grows and changes genus
     /// with the ground beneath it (convection, orographic lift, fronts),
     /// rains itself out, and new cumulus form in place. 0 = clouds keep
@@ -640,6 +670,7 @@ impl Default for Params {
             physiology: PHYSIOLOGY,
             seasons: SEASONS,
             cloud_dynamics: CLOUD_DYNAMICS,
+            biomes: BIOMES,
             seed_tree_p: SEED_TREE_P,
             seed_grass_p: SEED_GRASS_P,
             width: Grid::DEFAULT.width as u32,
@@ -664,6 +695,7 @@ impl Params {
             physiology: 0.0,
             seasons: 0.0,
             cloud_dynamics: 0.0,
+            biomes: 0.0,
             ..Params::default()
         }
     }
@@ -696,6 +728,7 @@ impl Params {
         self.physiology = prob(self.physiology, PHYSIOLOGY);
         self.seasons = prob(self.seasons, SEASONS);
         self.cloud_dynamics = prob(self.cloud_dynamics, CLOUD_DYNAMICS);
+        self.biomes = prob(self.biomes, BIOMES);
         self.mutation_rate = if self.mutation_rate.is_finite() {
             self.mutation_rate.clamp(0.0, 0.2)
         } else {
@@ -742,9 +775,20 @@ pub enum Species {
     /// Water-lover: booms on wet ground and wet seasons, suffers brutally in
     /// drought; lives fast.
     Willow = 3,
+    /// Boreal climax conifer: cold-hardy, deeply shade-tolerant, shallow-
+    /// rooted, fire-sensitive, evergreen — the dark taiga.
+    Spruce = 4,
+    /// Boreal pioneer: fast, short-lived, cold-hardy, deciduous, with tiny
+    /// wind-borne seed that floods burns and clearings.
+    Birch = 5,
+    /// Desert shrub (creosote): extraordinarily drought-tolerant, deep-
+    /// rooted, slow, very long-lived clones; frost-tender.
+    Creosote = 6,
 }
 
-pub const SPECIES_COUNT: usize = 4;
+pub const SPECIES_COUNT: usize = 7;
+/// The original four species — all a world without `biomes` ever grows.
+pub const BASE_SPECIES: usize = 4;
 
 impl Species {
     pub fn from_u8(v: u8) -> Species {
@@ -752,6 +796,9 @@ impl Species {
             1 => Species::Oak,
             2 => Species::Pine,
             3 => Species::Willow,
+            4 => Species::Spruce,
+            5 => Species::Birch,
+            6 => Species::Creosote,
             _ => Species::Acacia,
         }
     }
@@ -1011,6 +1058,126 @@ pub static SPECIES_TABLE: [SpeciesTraits; SPECIES_COUNT] = [
         beetle: 0.2,
         wet_rot: 0.3,
     },
+    SpeciesTraits {
+        name: "Spruce",
+        growth: 1.05,
+        maturity: 1.2,
+        mean_life: 1.3,
+        shade_tolerance: 0.6,
+        ash_affinity: 0.5,
+        drought_sensitivity: 1.3,
+        water_affinity: 1.1,
+        fireproof: 3.0,
+        crowding: 1.0,
+        dispersal: 3,
+        rot: 1.2,
+        nutrients: 0.8,
+        dry_ground: 1.0,
+        resprout: 0.0,
+        serotinous: false,
+        nitrogen_fixer: false,
+        jay_cached: false,
+        long_distance: 1.2,
+        flood_tolerant: false,
+        temp_opt: 0.2,
+        temp_width: 0.18,
+        poor_soil: 0.8,
+        fire_sprout: 0.0,
+        pest_susceptibility: 0.8,
+        palatability: 0.1,
+        own_shade: 1.0,
+        litter: 0.6,
+        seed_reserve: 0.0,
+        cold_hardy: 1.0,
+        seedbed: false,
+        ldd_scale: 4.0,
+        ldd_cap: 40.0,
+        taproot: 0.3,
+        flood_days: 6.0,
+        deciduous: 0.0,
+        beetle: 0.8,
+        wet_rot: 0.2,
+    },
+    SpeciesTraits {
+        name: "Birch",
+        growth: 1.8,
+        maturity: 0.6,
+        mean_life: 0.7,
+        shade_tolerance: 0.0,
+        ash_affinity: 2.0,
+        drought_sensitivity: 1.2,
+        water_affinity: 1.2,
+        fireproof: 1.0,
+        crowding: 1.0,
+        dispersal: 3,
+        rot: 0.8,
+        nutrients: 1.0,
+        dry_ground: 1.0,
+        resprout: 0.3,
+        serotinous: false,
+        nitrogen_fixer: false,
+        jay_cached: false,
+        long_distance: 2.5,
+        flood_tolerant: false,
+        temp_opt: 0.27,
+        temp_width: 0.22,
+        poor_soil: 0.5,
+        fire_sprout: 0.4,
+        pest_susceptibility: 0.4,
+        palatability: 0.6,
+        own_shade: 1.0,
+        litter: 0.0,
+        seed_reserve: 0.0,
+        cold_hardy: 0.95,
+        seedbed: false,
+        ldd_scale: 8.0,
+        ldd_cap: 80.0,
+        taproot: 0.4,
+        flood_days: 8.0,
+        deciduous: 1.0,
+        beetle: 0.2,
+        wet_rot: 0.2,
+    },
+    SpeciesTraits {
+        name: "Creosote",
+        growth: 0.4,
+        maturity: 1.0,
+        mean_life: 3.0,
+        shade_tolerance: 0.0,
+        ash_affinity: 0.5,
+        drought_sensitivity: 0.2,
+        water_affinity: 0.3,
+        fireproof: 1.0,
+        crowding: 0.6,
+        dispersal: 2,
+        rot: 2.0,
+        nutrients: 0.6,
+        dry_ground: 1.0,
+        resprout: 0.5,
+        serotinous: false,
+        nitrogen_fixer: false,
+        jay_cached: false,
+        long_distance: 0.5,
+        flood_tolerant: false,
+        temp_opt: 0.8,
+        temp_width: 0.22,
+        poor_soil: 1.0,
+        fire_sprout: 0.2,
+        pest_susceptibility: 0.1,
+        palatability: 0.05,
+        own_shade: 1.0,
+        litter: 0.0,
+        seed_reserve: 0.1,
+        cold_hardy: 0.0,
+        seedbed: false,
+        ldd_scale: 5.0,
+        ldd_cap: 30.0,
+        taproot: 1.0,
+        flood_days: 2.0,
+        deciduous: 0.3,
+        beetle: 0.0,
+        wet_rot: 0.3,
+    },
 ];
 
 /// Grass functional types, each with a peaked niche.
@@ -1028,9 +1195,17 @@ pub enum GrassKind {
     /// Annual grass: colonizes disturbed ground by seed, short-lived, and
     /// overgrown by perennials on undisturbed ground.
     Annual = 3,
+    /// Reeds and cattails: tall marsh stands in open water margins and
+    /// saturated ground; rhizomes form dense, flood-proof beds.
+    Reeds = 4,
+    /// Succulents and cacti: the desert floor; store water, barely burn,
+    /// live very long, spread slowly.
+    Cactus = 5,
 }
 
-pub const GRASS_KIND_COUNT: usize = 4;
+pub const GRASS_KIND_COUNT: usize = 6;
+/// The original four grass kinds — all a world without `biomes` grows.
+pub const BASE_GRASS_KINDS: usize = 4;
 
 impl GrassKind {
     pub fn from_u8(v: u8) -> GrassKind {
@@ -1038,6 +1213,8 @@ impl GrassKind {
             1 => GrassKind::Sod,
             2 => GrassKind::Sedge,
             3 => GrassKind::Annual,
+            4 => GrassKind::Reeds,
+            5 => GrassKind::Cactus,
             _ => GrassKind::Bunch,
         }
     }
@@ -1085,6 +1262,8 @@ pub static GRASS_TABLE: [GrassTraits; GRASS_KIND_COUNT] = [
     GrassTraits { name: "Sod grass", creep: 1.1, life: 1.3, shade_tolerance: 0.45, temp_opt: 0.38, temp_width: 0.19, water_opt: 0.62, water_width: 0.24, flammability: 0.6, fire_resprout: 0.0, sod: 0.85, flood_tolerant: false, seeder: false, drought_sensitivity: 1.6, palatability: 1.0 },
     GrassTraits { name: "Sedge", creep: 1.0, life: 1.0, shade_tolerance: 0.2, temp_opt: 0.5, temp_width: 0.35, water_opt: 0.92, water_width: 0.20, flammability: 0.3, fire_resprout: 0.3, sod: 1.0, flood_tolerant: true, seeder: false, drought_sensitivity: 1.3, palatability: 0.35 },
     GrassTraits { name: "Annual", creep: 0.25, life: 0.35, shade_tolerance: 0.0, temp_opt: 0.55, temp_width: 0.36, water_opt: 0.45, water_width: 0.40, flammability: 1.3, fire_resprout: 0.0, sod: 1.2, flood_tolerant: false, seeder: true, drought_sensitivity: 0.7, palatability: 0.7 },
+    GrassTraits { name: "Reeds", creep: 1.3, life: 1.5, shade_tolerance: 0.1, temp_opt: 0.55, temp_width: 0.35, water_opt: 1.0, water_width: 0.15, flammability: 0.8, fire_resprout: 0.8, sod: 0.4, flood_tolerant: true, seeder: false, drought_sensitivity: 2.0, palatability: 0.3 },
+    GrassTraits { name: "Cactus", creep: 0.2, life: 3.0, shade_tolerance: 0.0, temp_opt: 0.85, temp_width: 0.2, water_opt: 0.08, water_width: 0.2, flammability: 0.1, fire_resprout: 0.0, sod: 1.3, flood_tolerant: false, seeder: false, drought_sensitivity: 0.05, palatability: 0.05 },
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1170,9 +1349,55 @@ pub enum CloudEvent {
     Evaporated = 5,
     /// A thunderhead's gust front triggered a daughter cell.
     Daughter = 6,
+    /// A large fire lofted its own cloud (pyrocumulus).
+    Pyro = 7,
 }
 
-pub const CLOUD_EVENT_COUNT: usize = 7;
+pub const CLOUD_EVENT_COUNT: usize = 8;
+
+/// Climate biome of a tile (Whittaker-style: site temperature × water),
+/// with saturated ground as wetland.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum Biome {
+    Wetland = 0,
+    Tundra = 1,
+    Boreal = 2,
+    TemperateForest = 3,
+    Grassland = 4,
+    Savanna = 5,
+    Desert = 6,
+}
+
+pub const BIOME_COUNT: usize = 7;
+
+impl Biome {
+    pub fn from_u8(v: u8) -> Biome {
+        use Biome::*;
+        match v {
+            0 => Wetland,
+            1 => Tundra,
+            2 => Boreal,
+            3 => TemperateForest,
+            4 => Grassland,
+            5 => Savanna,
+            _ => Desert,
+        }
+    }
+
+    pub fn name(self) -> &'static str {
+        use Biome::*;
+        match self {
+            Wetland => "wetland",
+            Tundra => "tundra",
+            Boreal => "boreal forest",
+            TemperateForest => "temperate forest",
+            Grassland => "grassland",
+            Savanna => "savanna",
+            Desert => "desert",
+        }
+    }
+}
 
 impl DeathCause {
     pub fn from_u8(v: u8) -> DeathCause {
@@ -1208,6 +1433,19 @@ impl DeathCause {
             Scoured => "flood scour",
         }
     }
+}
+
+/// Index drawn in proportion to `weights` from a 64-bit hash roll.
+fn weighted_pick(weights: &[f64], roll: u64) -> usize {
+    let total: f64 = weights.iter().sum();
+    let mut pick = (roll >> 11) as f64 / (1u64 << 53) as f64 * total;
+    for (k, &wt) in weights.iter().enumerate() {
+        pick -= wt;
+        if pick <= 0.0 {
+            return k;
+        }
+    }
+    weights.len() - 1
 }
 
 /// Groundwater map from the seed: the catena water of the terrain (valley
@@ -1294,6 +1532,12 @@ pub struct World {
     deaths_recent: [f32; DEATH_CAUSE_COUNT],
     /// Cloud lifecycle events since the world began.
     cloud_events: [u32; CLOUD_EVENT_COUNT],
+    /// Snowpack depth per tile (0..255) and last tick's melt, as a
+    /// fraction of the map (drives spring floods).
+    snow: Vec<u8>,
+    melt_recent: f64,
+    /// The tile of the most recent ground strike (for a localized flash).
+    last_strike: Option<usize>,
     /// Mature-tree count at distance 1 (crowding pressure).
     mature_nbrs: Vec<u8>,
     /// Grass count at distance 1 (clonal spread pressure).
@@ -1394,6 +1638,9 @@ impl World {
             deaths_total: [0; DEATH_CAUSE_COUNT],
             deaths_recent: [0.0; DEATH_CAUSE_COUNT],
             cloud_events: [0; CLOUD_EVENT_COUNT],
+            snow: vec![0; n],
+            melt_recent: 0.0,
+            last_strike: None,
             mature_nbrs: vec![0; n],
             grass_nbrs: vec![0; n],
             tree_nbrs: vec![0; n],
@@ -1425,19 +1672,41 @@ impl World {
             params,
         };
         w.rebuild_rivers();
+        // The world's climate is needed before seeding (site fits below).
+        let (sun, moisture) = w.climate_at(0);
+        w.sun = sun;
+        w.moisture = moisture;
+        let biomes = w.params.biomes > 0.0;
+        if biomes {
+            w.refresh_site_cache();
+        }
+        // The biome plants are only in the seed mix with biomes on.
+        let species_pool = if biomes { SPECIES_COUNT } else { BASE_SPECIES };
+        let grass_pool = if biomes { GRASS_KIND_COUNT } else { BASE_GRASS_KINDS };
         for i in 0..n {
             if w.channel[i] {
                 continue; // open water
             }
             if rng::uniform01(seed, i as u32, 0, Stream::Seeding) < w.params.seed_tree_p {
-                let sp = Species::from_u8(
-                    (rng::hash(seed, i as u32, 0, Stream::SpeciesChoice) % SPECIES_COUNT as u64)
-                        as u8,
-                );
+                let roll = rng::hash(seed, i as u32, 0, Stream::SpeciesChoice);
+                let sp = if biomes {
+                    // Founders arrive from the regional species pool: a
+                    // tile's founder is likelier to be a species suited to
+                    // it (weights = how readily each would establish there).
+                    let weights: Vec<f64> = (0..species_pool).map(|k| w.tree_establishment(i, k, 1.0).max(1e-4)).collect();
+                    Species::from_u8(weighted_pick(&weights, roll) as u8)
+                } else {
+                    Species::from_u8((roll % species_pool as u64) as u8)
+                };
                 w.plant_tree(i, sp, 0);
             } else if rng::uniform01(seed, i as u32, 0, Stream::SeedingGrass) < w.params.seed_grass_p {
-                let kind = (rng::hash(seed, i as u32 + n as u32, 0, Stream::SpeciesChoice)
-                    % GRASS_KIND_COUNT as u64) as u8;
+                let roll = rng::hash(seed, i as u32 + n as u32, 0, Stream::SpeciesChoice);
+                let kind = if biomes {
+                    let weights: Vec<f64> = (0..grass_pool).map(|k| w.grass_fit_raw(k, i).max(1e-4)).collect();
+                    weighted_pick(&weights, roll) as u8
+                } else {
+                    (roll % grass_pool as u64) as u8
+                };
                 w.plant_grass(i, GrassKind::from_u8(kind), 0);
             }
         }
@@ -1503,12 +1772,23 @@ impl World {
     /// map's mid-altitude, scaled by climate_zones.
     fn lapse(&self, index: usize) -> f64 {
         let mid = self.terrain.altitude_amp as f64 / 2.0;
-        -LAPSE * self.params.climate_zones * (self.terrain.altitude[index] as f64 - mid)
+        let altitude = -LAPSE * self.params.climate_zones * (self.terrain.altitude[index] as f64 - mid);
+        // Biomes: the north runs colder, the south warmer.
+        let lat = -LAT_GRADIENT
+            * self.params.biomes
+            * self.terrain.gradient_amp as f64
+            * (self.terrain.latitude[index] as f64 - 0.5);
+        altitude + lat
     }
 
     /// Regional moisture shift (wet vs dry regions), scaled by climate_zones.
     fn rain_shift(&self, index: usize) -> f64 {
-        RAIN_GRADIENT * self.params.climate_zones * self.terrain.rain[index] as f64
+        // Biomes: a wet coast grading to a dry continental interior.
+        let coast = -COAST_GRADIENT
+            * self.params.biomes
+            * self.terrain.gradient_amp as f64
+            * (self.terrain.interior[index] as f64 - 0.5);
+        RAIN_GRADIENT * self.params.climate_zones * self.terrain.rain[index] as f64 + coast
     }
 
     /// Whether a tile is open river water (nothing grows there).
@@ -2029,6 +2309,8 @@ impl World {
             water,
             from: kind,
             morph: 1.0,
+            flash: 0,
+            glow: 0,
         });
     }
 
@@ -2449,7 +2731,12 @@ impl World {
                     let (x, y) = hex::axial_to_world(q, r);
                     let d = ((x - center[0]).powi(2) + (y - center[1]).powi(2)).sqrt();
                     if d < core {
-                        self.wet[i] = WET_TICKS;
+                        // Cold ground takes it as snow (climate zones on).
+                        if p.climate_zones > 0.0 && self.temperature(i) < SNOW_PRECIP_T {
+                            self.snow[i] = self.snow[i].saturating_add(SNOWFALL);
+                        } else {
+                            self.wet[i] = WET_TICKS;
+                        }
                         self.burn[i] = 0; // the downpour douses open flame
                     }
                 }
@@ -2490,7 +2777,9 @@ impl World {
             if bolt_p > 0.0 && k(0) < bolt_p {
                 let rr = storm.radius * k(1).sqrt();
                 let phi = std::f64::consts::TAU * k(2);
+                self.storms[idx].flash = FLASH_TICKS;
                 if let Some(i) = self.grid.pick(center[0] + rr * phi.cos(), center[1] + rr * phi.sin()) {
+                    self.last_strike = Some(i);
                     self.bolt[i] = BOLT_TICKS;
                     if self.flammable(i, tick) && self.wet[i] == 0 {
                         self.burn[i] = BURN_TICKS;
@@ -2502,7 +2791,7 @@ impl World {
 
     /// Whether a cloud is being forced up a windward slope hard enough, with
     /// enough water, to rain there whatever its genus (not thin cirrus).
-    fn orographic_rain(&self, s: &Storm) -> bool {
+    pub fn orographic_rain(&self, s: &Storm) -> bool {
         if s.kind == CloudKind::Cirrus || s.water <= OROG_WATER {
             return false;
         }
@@ -2547,6 +2836,16 @@ impl World {
         for k in 0..self.storms.len() {
             let mut s = self.storms[k];
             s.morph = (s.morph + CLOUD_MORPH).min(1.0);
+            s.flash = s.flash.saturating_sub(1);
+            s.glow = s.glow.saturating_sub(1);
+            // Grown thunderheads flicker with in-cloud lightning.
+            if s.kind == CloudKind::Cumulonimbus
+                && s.morph >= 1.0
+                && s.water > RAIN_WATER
+                && rng::uniform01(self.seed, 9_000 + k as u32, tick, Stream::StormBolt) < INTRACLOUD_P
+            {
+                s.glow = 2;
+            }
             let speed = (s.vel[0] * s.vel[0] + s.vel[1] * s.vel[1]).sqrt().max(1e-9);
             let dir = [s.vel[0] / speed, s.vel[1] / speed];
             let Some(i) = self.grid.pick(s.pos[0], s.pos[1]) else {
@@ -2615,6 +2914,20 @@ impl World {
                     s.pos[1] + s.radius * (fy + side * fx),
                 ];
                 daughters.push(pos);
+            }
+        }
+        // Fire clouds: a big fire's heat lofts smoke and moisture into a
+        // pyrocumulus over the flames.
+        let burning: Vec<usize> = (0..self.grid.cells()).filter(|&i| self.burn[i] > 0).collect();
+        if burning.len() >= PYRO_TILES
+            && rng::uniform01(self.seed, 8_888, tick, Stream::StormSpawn) < PYRO_P * dyn_
+        {
+            let pick = rng::hash(self.seed, 8_889, tick, Stream::StormSpawn) as usize % burning.len();
+            let (x, y) = self.grid.center(burning[pick]);
+            self.spawn_cloud(CloudKind::Cumulus, [x, y], 3.5, tick);
+            self.cloud_events[CloudEvent::Pyro as usize] += 1;
+            if let Some(c) = self.storms.last_mut() {
+                c.water = 0.55;
             }
         }
         for pos in daughters {
@@ -2775,6 +3088,25 @@ impl World {
         }
     }
 
+    /// Snowmelt: a snowpack melts in warm spells, wetting the ground; a
+    /// big melt across the map swells the rivers (see flood_pass).
+    fn snow_pass(&mut self) {
+        let mut melted = 0.0;
+        for i in 0..self.grid.cells() {
+            if self.snow[i] == 0 {
+                continue;
+            }
+            let t = self.temperature(i);
+            if t > MELT_T {
+                let m = ((MELT_RATE * (t - MELT_T) / 0.1).ceil() as u8).min(self.snow[i]);
+                self.snow[i] -= m;
+                self.wet[i] = WET_TICKS;
+                melted += m as f64 / 255.0;
+            }
+        }
+        self.melt_recent = melted / self.grid.cells() as f64;
+    }
+
     /// River flood pulses. Wet seasons can send the rivers over their
     /// banks; for FLOOD_TICKS the floodplain (up to `flood_stage` of each
     /// corridor's reach) is under water: grasses other than sedge and young
@@ -2791,7 +3123,9 @@ impl World {
             return;
         }
         if self.flood_left == 0 {
-            let wetness = ((self.moisture - FLOOD_MOISTURE) / (1.0 - FLOOD_MOISTURE)).max(0.0);
+            // Wet seasons and snowmelt freshets both flood the rivers.
+            let wetness = ((self.moisture - FLOOD_MOISTURE) / (1.0 - FLOOD_MOISTURE)).max(0.0)
+                + FLOOD_MELT * self.melt_recent;
             if rng::uniform01(self.seed, 0, tick, Stream::Flood) < r * FLOOD_P * wetness {
                 self.flood_left = FLOOD_TICKS;
                 self.flood_stage = 0.5 + 0.8 * rng::uniform01(self.seed, 1, tick, Stream::Flood);
@@ -3249,6 +3583,77 @@ impl World {
         }
     }
 
+    /// Whether a cloud is precipitating right now (what the rain loop
+    /// applies to the ground).
+    pub fn precipitating(&self, s: &Storm) -> bool {
+        if self.params.cloud_dynamics <= 0.0 {
+            return s.kind.traits().rains;
+        }
+        (s.kind.traits().rains && s.water > RAIN_WATER && s.morph > 0.5) || self.orographic_rain(s)
+    }
+
+    /// The map's altitude range (grows with map size), for display.
+    pub fn altitude_range(&self) -> f32 {
+        self.terrain.altitude_amp
+    }
+
+    /// Snowpack on a tile, 0..1.
+    pub fn snowpack(&self, index: usize) -> f32 {
+        self.snow[index] as f32 / 255.0
+    }
+
+    /// Site climate (temperature index, water) — what the biome is read
+    /// from (the weather swing damped, as for niches).
+    pub fn site_climate(&self, index: usize) -> (f64, f64) {
+        self.niche_site(index)
+    }
+
+    /// The climate biome of a tile (Whittaker-style temperature × water).
+    pub fn biome(&self, index: usize) -> Biome {
+        let (t, w) = self.niche_site(index);
+        if self.channel[index] || self.water_table(index) > 0.8 {
+            Biome::Wetland
+        } else if t < 0.22 {
+            Biome::Tundra
+        } else if t < 0.36 {
+            if w < 0.25 { Biome::Tundra } else { Biome::Boreal }
+        } else if t < 0.58 {
+            if w < 0.42 { Biome::Grassland } else { Biome::TemperateForest }
+        } else if w < 0.25 {
+            Biome::Desert
+        } else {
+            Biome::Savanna
+        }
+    }
+
+    /// Fraction of the sky's light blocked by cloud over the map, 0..1 —
+    /// storm light dims and cools the scene under overcast.
+    pub fn overcast(&self) -> f64 {
+        let area = self.grid.cells() as f64 * 2.598;
+        let covered: f64 = self
+            .storms
+            .iter()
+            .map(|s| {
+                let tau = s.kind.traits().optical_depth as f64;
+                std::f64::consts::PI * s.radius * s.radius * (1.0 - (-tau).exp())
+            })
+            .sum();
+        (covered / area).min(1.0)
+    }
+
+    /// Where the most recent ground strike hit (world x, y), if any.
+    pub fn last_strike(&self) -> Option<[f64; 2]> {
+        self.last_strike.map(|i| {
+            let (x, y) = self.grid.center(i);
+            [x, y]
+        })
+    }
+
+    /// Lightning flash right now, 0..1 (a ground strike lights the scene).
+    pub fn flash(&self) -> f32 {
+        self.storms.iter().map(|s| s.flash).max().unwrap_or(0) as f32 / FLASH_TICKS as f32
+    }
+
     /// Cloud lifecycle events since the world began (CloudEvent order).
     pub fn cloud_events(&self) -> [u32; CLOUD_EVENT_COUNT] {
         self.cloud_events
@@ -3287,6 +3692,12 @@ impl World {
             pct(self.nutrient_ratio(i) as f64)
         ));
         out.push(format!("Understory light {}", pct(self.canopy_light(i))));
+        let snow = self.snowpack(i);
+        out.push(format!(
+            "Biome: {}{}",
+            self.biome(i).name(),
+            if snow > 0.0 { format!(" · snowpack {}", pct(snow as f64)) } else { String::new() }
+        ));
         match self.state[i] {
             Cell::Tree => {
                 let sp = self.species(i);
@@ -3470,6 +3881,9 @@ impl World {
         if c.channel {
             return 0.0; // open water
         }
+        if k >= BASE_SPECIES && p.biomes <= 0.0 {
+            return 0.0; // the biome plants exist only with biomes on
+        }
         // Shade tolerance, weakened under a canopy of the species' own kind
         // (oak seedlings fail beneath oaks: they need gaps).
         let own = self.adults_near[i][k] as f64;
@@ -3629,7 +4043,9 @@ impl World {
                 let tr = &GRASS_TABLE[k];
                 let light_k = light + niches * tr.shade_tolerance * (1.0 - light);
                 let creep = p.grass_clonal_p * self.gmul(tr.creep) * self.grass_nbrs_k[i][k] as f64;
-                let seed = if own { p.grass_seed_p / GRASS_KIND_COUNT as f64 } else { 0.0 }
+                // Spontaneous seed splits across the kinds actually present.
+                let pool = if p.biomes > 0.0 { GRASS_KIND_COUNT } else { BASE_GRASS_KINDS };
+                let seed = if own && k < pool { p.grass_seed_p / pool as f64 } else { 0.0 }
                     + if tr.seeder {
                         // Scales with the grass-spread knob, so zero spread
                         // truly freezes grass.
@@ -3655,6 +4071,9 @@ impl World {
                 if tr.seeder {
                     let sod = self.grass_nbrs_k[i][GrassKind::Sod as usize] as f64;
                     pk *= (1.0 - p.competition * THATCH * sod).max(0.0);
+                }
+                if k >= BASE_GRASS_KINDS {
+                    pk *= p.biomes; // biome plants only with biomes on
                 }
                 pk.clamp(0.0, 1.0)
             };
@@ -3717,6 +4136,7 @@ impl World {
         self.refresh_site_cache();
         self.decay_pass();
         self.weather_pass(tick);
+        self.snow_pass();
         self.flood_pass(tick);
         self.rebuild_fields(tick);
         self.root_pass(tick);
@@ -4270,6 +4690,7 @@ mod tests {
             physiology: 4.0,
             seasons: f64::NEG_INFINITY,
             cloud_dynamics: -3.0,
+            biomes: 2.0,
             seed_tree_p: f64::NAN,
             seed_grass_p: 0.5,
             width: 3,
@@ -4283,6 +4704,7 @@ mod tests {
         assert_eq!((p.climate_zones, p.rivers, p.grazing), (1.0, RIVERS, 0.0));
         assert_eq!((p.physiology, p.seasons), (1.0, SEASONS));
         assert_eq!(p.cloud_dynamics, 0.0);
+        assert_eq!(p.biomes, 1.0);
         assert_eq!(p.grass_seed_p, 1.0);
         assert_eq!(p.grass_clonal_p, 0.0);
         assert_eq!(p.shade_strength, 1.0);
@@ -5438,16 +5860,16 @@ mod tests {
         let mut w = bare_world(5, Params { competition: 1.0, ..no_fire() });
         let (c, _, _) = center();
         let oak = Species::Oak as usize;
-        with_adults(&mut w, c, [0, 6, 0, 0]);
+        with_adults(&mut w, c, [0, 6, 0, 0, 0, 0, 0]);
         let under_oaks = w.tree_establishment(c, oak, 0.4);
-        with_adults(&mut w, c, [0, 0, 6, 0]);
+        with_adults(&mut w, c, [0, 0, 6, 0, 0, 0, 0]);
         let under_pines = w.tree_establishment(c, oak, 0.4);
         assert!(under_oaks < under_pines * 0.6, "{under_oaks:.4} vs {under_pines:.4}");
 
         let mut off = bare_world(5, no_fire());
-        with_adults(&mut off, c, [0, 6, 0, 0]);
+        with_adults(&mut off, c, [0, 6, 0, 0, 0, 0, 0]);
         let a = off.tree_establishment(c, oak, 0.4);
-        with_adults(&mut off, c, [0, 0, 6, 0]);
+        with_adults(&mut off, c, [0, 0, 6, 0, 0, 0, 0]);
         assert_eq!(a, off.tree_establishment(c, oak, 0.4));
     }
 
@@ -5771,7 +6193,7 @@ mod tests {
         assert!(slope > OROG_SLOPE, "the test map has windward slopes ({slope:.3})");
         let (x, y) = G.center(best);
         assert!((w.slope_along(x, y, [-1.0, 0.0]) + slope).abs() < 1e-9, "lee is the mirror");
-        let climbing = Storm { kind: CloudKind::Cumulus, pos: [x, y], vel: [0.3, 0.0], radius: 4.0, spawned: 0, water: 0.6, from: CloudKind::Cumulus, morph: 1.0 };
+        let climbing = Storm { kind: CloudKind::Cumulus, pos: [x, y], vel: [0.3, 0.0], radius: 4.0, spawned: 0, water: 0.6, from: CloudKind::Cumulus, morph: 1.0, flash: 0, glow: 0 };
         assert!(w.orographic_rain(&climbing), "forced up the ridge, a moist cloud rains");
         let sinking = Storm { vel: [-0.3, 0.0], ..climbing };
         assert!(!w.orographic_rain(&sinking), "on the lee it doesn't");
@@ -5803,6 +6225,87 @@ mod tests {
         }
         assert_eq!(w.storms[0].kind, CloudKind::Cumulus);
         assert_eq!(w.storms[0].water, 0.95);
+    }
+
+    #[test]
+    fn cold_ground_banks_snow_that_melts_into_wet_ground_and_a_freshet() {
+        let mut w = bare_world(50, Params { climate_zones: 1.0, cloud_dynamics: 1.0, ..physio() });
+        let (c, _, _) = center();
+        w.snow[c] = 200;
+        // Cold: the pack holds.
+        w.sun = 0.02;
+        w.snow_pass();
+        assert_eq!(w.snow[c], 200);
+        assert_eq!(w.melt_recent, 0.0);
+        // A warm spell melts it: wet ground below and a melt pulse that
+        // raises the flood odds.
+        w.sun = 0.9;
+        w.snow_pass();
+        assert!(w.snow[c] < 200, "the pack melts");
+        assert!(w.wet[c] > 0, "meltwater wets the ground");
+        assert!(w.melt_recent > 0.0);
+    }
+
+    #[test]
+    fn a_big_fire_lofts_its_own_cloud() {
+        let mut w = bare_world(51, Params { cloud_dynamics: 1.0, storm_rate: 0.0, ..physio() });
+        for i in 0..PYRO_TILES * 3 {
+            w.paint(i, Brush::Grass, 0);
+            w.burn[i] = BURN_TICKS;
+        }
+        for t in 1..200 {
+            for i in 0..PYRO_TILES * 3 {
+                w.burn[i] = BURN_TICKS;
+            }
+            w.cloud_life(t);
+        }
+        assert!(w.cloud_events()[CloudEvent::Pyro as usize] > 0, "a pyrocumulus should form");
+    }
+
+    #[test]
+    fn ground_strikes_flash_the_scene() {
+        let mut w = cloudy(1.0);
+        one_cloud(&mut w, CloudKind::Cumulonimbus, 0.9);
+        assert_eq!(w.flash(), 0.0);
+        w.storms[0].flash = FLASH_TICKS;
+        assert_eq!(w.flash(), 1.0);
+        w.cloud_life(5);
+        assert!(w.flash() < 1.0 && w.flash() > 0.0, "the flash fades over a few ticks");
+    }
+
+    #[test]
+    fn biomes_follow_temperature_and_water() {
+        let mut w = World::with_params(52, Params { biomes: 1.0, climate_zones: 1.0, ..physio() });
+        // Sweep the climate and classify a dry upland tile.
+        let tile = (0..CELLS).find(|&i| w.water_table(i) < 0.1 && !w.is_channel(i)).unwrap();
+        w.sun = 0.05;
+        let cold = w.biome(tile);
+        w.sun = 0.95;
+        w.moisture = 0.0;
+        let hot_dry = w.biome(tile);
+        assert!(matches!(cold, Biome::Tundra | Biome::Boreal), "cold → {cold:?}");
+        assert!(matches!(hot_dry, Biome::Desert | Biome::Savanna), "hot and dry → {hot_dry:?}");
+        // Saturated ground is wetland whatever the climate.
+        if let Some(wet) = (0..CELLS).find(|&i| w.water_table(i) > 0.85) {
+            assert_eq!(w.biome(wet), Biome::Wetland);
+        }
+    }
+
+    #[test]
+    fn biome_founders_match_their_sites() {
+        // With biomes on, the initial scatter weights species by how well
+        // they'd establish: on a big varied map, cold tiles get more
+        // boreal founders than hot ones do.
+        let w = World::with_params(53, Params { width: 192, height: 192, seed_tree_p: 0.05, ..Params::default() });
+        let n = w.grid().cells();
+        let boreal = |cold: bool| {
+            let trees: Vec<usize> = (0..n)
+                .filter(|&i| w.state(i) == Cell::Tree && (w.site_climate(i).0 < 0.4) == cold)
+                .collect();
+            let b = trees.iter().filter(|&&i| matches!(w.species(i), Species::Spruce | Species::Birch)).count();
+            b as f64 / trees.len().max(1) as f64
+        };
+        assert!(boreal(true) > 2.0 * boreal(false), "cold {:.2} vs warm {:.2}", boreal(true), boreal(false));
     }
 
 }

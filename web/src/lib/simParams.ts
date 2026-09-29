@@ -33,6 +33,7 @@ export type SimParams = {
   physiology: number;
   seasons: number;
   cloudDynamics: number;
+  biomes: number;
   seedTreeP: number;
   seedGrassP: number;
   /** Map size in tiles per side (applies on Reseed). */
@@ -70,6 +71,7 @@ export const DEFAULT_PARAMS: SimParams = {
   physiology: 1.0,
   seasons: 1.0,
   cloudDynamics: 1.0,
+  biomes: 1.0,
   seedTreeP: 0.0,
   seedGrassP: 0.0,
   width: 256,
@@ -102,10 +104,28 @@ export const PRESETS: Preset[] = [
     params: { ...DEFAULT_PARAMS, treeGrowthP: 0.005, pestStrength: 0.3, browse: 0.3, competition: 0.5 },
   },
   {
+    key: "coast-desert",
+    label: "Coast to desert",
+    hint: "the climate gradients rule: wet coastal forest grades through savanna and grassland to a cactus-and-creosote desert inland, spruce and birch in the cold north (best on 256²+)",
+    params: { ...DEFAULT_PARAMS, climateZones: 0.4 },
+  },
+  {
+    key: "mountain-island",
+    label: "Mountain island",
+    hint: "altitude rules: savanna foothills, pine and spruce belts, alpine tundra and snowy peaks, rivers radiating to the shore",
+    params: { ...DEFAULT_PARAMS, biomes: 0.4 },
+  },
+  {
+    key: "river-delta",
+    label: "River delta",
+    hint: "low, flat and wet: channels, reed beds and willows, frequent floods laying fresh sediment",
+    params: { ...DEFAULT_PARAMS, terrain: 0.4, climateZones: 0.2, waterTable: 1.0, stormRate: 0.012 },
+  },
+  {
     key: "flat-plain",
     label: "Flat plain",
     hint: "no relief, rivers, climate zones, grazers, or grass types: nothing to sort by (~2.5 effective types)",
-    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0, physiology: 0, seasons: 0, cloudDynamics: 0 },
+    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0, physiology: 0, seasons: 0, cloudDynamics: 0, biomes: 0 },
   },
   {
     key: "moist-forest",
@@ -185,6 +205,7 @@ export const PARAM_FIELDS: ParamField[] = [
   { key: "physiology", label: "Tree physiology %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "seasons", label: "Seasons %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "cloudDynamics", label: "Dynamic clouds %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "biomes", label: "Biomes (gradients + biome plants) %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "seedTreeP", label: "Seed trees %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "seedGrassP", label: "Seed grass %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "width", label: "Map width (tiles)", kind: "int", min: 8, max: 512, step: 8, appliesOnReseed: true },

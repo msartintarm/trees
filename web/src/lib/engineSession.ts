@@ -50,7 +50,7 @@ async function loadEngine(config: InitConfig): Promise<EngineModule> {
   return mod;
 }
 
-function snapshot(sim: Sim): StatsSnapshot {
+function snapshot(sim: Sim, biomeView: boolean): StatsSnapshot {
   const [bare, grass, trees, burning, storms, infested] = sim.counts();
   return {
     tick: sim.tick(),
@@ -66,6 +66,8 @@ function snapshot(sim: Sim): StatsSnapshot {
     diversity: sim.diversity(),
     deathsRecent: Array.from(sim.deaths_recent()),
     clouds: Array.from(sim.cloud_counts()),
+    biomeShares: Array.from(sim.biome_shares()),
+    biomeSamples: biomeView ? Array.from(sim.biome_samples()) : [],
     cloudEvents: Array.from(sim.cloud_events()),
     heat: sim.heat(),
     localDiversity: sim.local_diversity(),
@@ -97,6 +99,7 @@ export async function startEngineSession(
   cb.onReady({ backend: renderer.backend(), seed: sim.seed() });
 
   let disposed = false;
+  let biomeView = false;
   let last = performance.now();
   // The renderer's soil slab tracks the map size (it changes on reseed).
   let gridW = 0;
@@ -123,11 +126,12 @@ export async function startEngineSession(
         sim.heat(),
         sim.eye(),
         sim.light_view_proj(),
+        sim.atmosphere(),
         sim.frame_bytes(),
         sim.frame_counts(),
         sim.roots_view(),
       );
-      cb.onFrame({ snapshot: snapshot(sim) });
+      cb.onFrame({ snapshot: snapshot(sim, biomeView) });
     } catch (e) {
       disposed = true;
       cb.onFatal(String(e));
@@ -186,6 +190,7 @@ export async function startEngineSession(
           p.physiology,
           p.seasons,
           p.cloudDynamics,
+          p.biomes,
           p.seedTreeP,
           p.seedGrassP,
           p.width,
@@ -213,6 +218,13 @@ export async function startEngineSession(
         break;
       case "rootsView":
         sim.set_roots_view(c.on);
+        break;
+      case "flashes":
+        sim.set_flashes(c.on);
+        break;
+      case "biomeView":
+        biomeView = c.on;
+        sim.set_biome_view(c.on);
         break;
       case "resize":
         canvas.width = c.w;

@@ -4,7 +4,7 @@
 //!     cargo run --release --example cloud_probe -- 128 4000
 use tree_engine::sim::world::{CloudKind, Params, World, CLOUD_EVENT_COUNT};
 
-const EVENTS: [&str; CLOUD_EVENT_COUNT] = ["formed", "towered", "collapsed", "front", "broke up", "evaporated", "daughter"];
+const EVENTS: [&str; CLOUD_EVENT_COUNT] = ["formed", "towered", "collapsed", "front", "broke up", "evaporated", "daughter", "fire cloud"];
 
 fn main() {
     let side: u32 = std::env::args().nth(1).and_then(|a| a.parse().ok()).unwrap_or(128);

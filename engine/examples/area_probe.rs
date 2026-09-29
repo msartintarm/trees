@@ -4,7 +4,7 @@
 use tree_engine::sim::world::{Cell, Params, World, GRASS_KIND_COUNT, SPECIES_COUNT};
 
 const TYPES: usize = SPECIES_COUNT + GRASS_KIND_COUNT;
-const NAMES: [&str; TYPES] = ["acacia", "oak", "pine", "willow", "bunch", "sod", "sedge", "annual"];
+const NAMES: [&str; TYPES] = ["acacia", "oak", "pine", "willow", "spruce", "birch", "creosote", "bunch", "sod", "sedge", "annual", "reeds", "cactus"];
 
 fn eff(n: &[u32]) -> f64 {
     let t: u32 = n.iter().sum();

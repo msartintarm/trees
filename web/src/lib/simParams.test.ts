@@ -116,6 +116,14 @@ test("presets keep the map size and still match on a custom-sized map", () => {
   assert.equal(matchingPreset(big), "defaults");
 });
 
+test("the regional presets lean on the landscape features they showcase", () => {
+  const by = Object.fromEntries(PRESETS.map((p) => [p.key, p.params]));
+  assert.ok(by["coast-desert"].biomes > by["coast-desert"].climateZones, "gradients over mountains");
+  assert.ok(by["mountain-island"].climateZones > by["mountain-island"].biomes, "mountains over gradients");
+  assert.ok(by["river-delta"].terrain < 1 && by["river-delta"].rivers === 1, "flat and wet");
+  assert.equal(by["flat-plain"].biomes, 0);
+});
+
 test("every SimParams key has exactly one field spec", () => {
   const keys = PARAM_FIELDS.map((f) => f.key).sort();
   assert.deepEqual(keys, Object.keys(DEFAULT_PARAMS).sort());

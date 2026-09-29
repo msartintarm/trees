@@ -23,21 +23,53 @@ pub struct Instance {
     /// Trees: phototropic lean (horizontal shear per unit height, toward
     /// open light). Clouds: the wind direction the mesh turns to face.
     pub lean: [f32; 2],
+    /// Surface gloss: > 0 wet sheen (puddles, rain-slick ground), < 0
+    /// drought cracks. Ground only.
+    pub gloss: f32,
 }
 
 /// Stream order shared with the renderer: one mesh per stream.
 pub mod stream {
+    use crate::sim::world::{GRASS_KIND_COUNT, SPECIES_COUNT};
+
     pub const GROUND: usize = 0;
-    pub const TREES: [usize; 4] = [1, 2, 3, 4];
-    pub const GRASS: [usize; 4] = [5, 6, 7, 8];
-    pub const MUSHROOMS: usize = 9;
+    const TREE0: usize = 1;
+    const GRASS0: usize = TREE0 + SPECIES_COUNT;
+    pub const MUSHROOMS: usize = GRASS0 + GRASS_KIND_COUNT;
+    const CLOUD0: usize = MUSHROOMS + 1;
+    pub const BOLTS: usize = CLOUD0 + 4;
+    pub const ROOTS: usize = BOLTS + 1;
+    pub const SUN: usize = ROOTS + 1;
+    /// Rain and snow shafts under precipitating clouds.
+    pub const RAIN: usize = SUN + 1;
+    /// Smoke plumes over fires.
+    pub const SMOKE: usize = RAIN + 1;
+    /// Orographic cap clouds on peaks.
+    pub const CAP: usize = SMOKE + 1;
+    pub const COUNT: usize = CAP + 1;
+
+    pub const TREES: [usize; SPECIES_COUNT] = {
+        let mut a = [0; SPECIES_COUNT];
+        let mut k = 0;
+        while k < SPECIES_COUNT {
+            a[k] = TREE0 + k;
+            k += 1;
+        }
+        a
+    };
+    pub const GRASS: [usize; GRASS_KIND_COUNT] = {
+        let mut a = [0; GRASS_KIND_COUNT];
+        let mut k = 0;
+        while k < GRASS_KIND_COUNT {
+            a[k] = GRASS0 + k;
+            k += 1;
+        }
+        a
+    };
     /// Cumulus, cumulonimbus, nimbostratus, cirrus (CloudKind order).
-    pub const CLOUDS: [usize; 4] = [10, 11, 12, 13];
-    pub const BOLTS: usize = 14;
-    pub const ROOTS: usize = 15;
-    pub const SUN: usize = 16;
+    pub const CLOUDS: [usize; 4] = [CLOUD0, CLOUD0 + 1, CLOUD0 + 2, CLOUD0 + 3];
 }
-pub const STREAM_COUNT: usize = 17;
+pub const STREAM_COUNT: usize = stream::COUNT;
 
 /// Display options that don't touch the simulation.
 #[derive(Clone, Copy, Debug, Default)]
@@ -51,6 +83,10 @@ pub struct View {
     pub roots: bool,
     /// Heat, 0..1 (the sun's size and glow).
     pub heat: f32,
+    /// The biome overlay: ground tinted by climate biome.
+    pub biomes: bool,
+    /// Lightning flashes shown (the comfort setting).
+    pub flashes: bool,
 }
 
 /// Ticks a plant takes to reach full size.
@@ -116,6 +152,9 @@ const GRASS_YOUNG: [[f32; 3]; GRASS_KIND_COUNT] = [
     [0.20, 0.42, 0.15],
     [0.14, 0.30, 0.20],
     [0.50, 0.52, 0.22],
+    // Reeds (tall green-gold), cactus (blue-grey succulent green).
+    [0.42, 0.52, 0.20],
+    [0.30, 0.46, 0.36],
 ];
 const GRASS_OLD: [f32; 3] = [0.50, 0.45, 0.21];
 /// Exposed bedrock on thin ridge soils.
@@ -128,6 +167,11 @@ const CANOPY_YOUNG: [[f32; 3]; SPECIES_COUNT] = [
     [0.24, 0.48, 0.12],
     [0.05, 0.24, 0.24],
     [0.62, 0.76, 0.52],
+    // Spruce (blue-silver needles), birch (bright lime leaves), creosote
+    // (dusty grey-olive).
+    [0.30, 0.42, 0.50],
+    [0.45, 0.80, 0.25],
+    [0.46, 0.44, 0.30],
 ];
 /// Old canopies dull partway toward this (each keeps its own hue).
 const CANOPY_OLD: [f32; 3] = [0.42, 0.40, 0.22];
@@ -165,6 +209,9 @@ const AUTUMN: [[f32; 3]; SPECIES_COUNT] = [
     [0.58, 0.30, 0.10],
     [0.10, 0.28, 0.24],
     [0.80, 0.70, 0.22],
+    [0.04, 0.18, 0.16],
+    [0.92, 0.78, 0.18],
+    [0.40, 0.38, 0.18],
 ];
 const BARE_TWIGS: [f32; 3] = [0.40, 0.34, 0.28];
 /// How far the snowline drops at the heart of winter (temperature index).
@@ -180,6 +227,18 @@ const GROUNDWATER: [f32; 3] = [0.18, 0.42, 0.88];
 /// The sun disc: mild white and hot gold (over-bright so it glows).
 const SUN_MILD: [f32; 3] = [2.2, 2.2, 2.1];
 const SUN_HOT: [f32; 3] = [3.2, 2.3, 0.9];
+
+/// Biome overlay colors (Biome order): wetland, tundra, boreal forest,
+/// temperate forest, grassland, savanna, desert.
+pub const BIOME_COLORS: [[f32; 3]; crate::sim::world::BIOME_COUNT] = [
+    [0.20, 0.50, 0.62],
+    [0.70, 0.74, 0.78],
+    [0.12, 0.36, 0.30],
+    [0.22, 0.52, 0.18],
+    [0.72, 0.70, 0.30],
+    [0.80, 0.56, 0.22],
+    [0.90, 0.78, 0.50],
+];
 
 /// River water, floodwater over the floodplain, fresh sediment, snow.
 const RIVER: [f32; 3] = [0.14, 0.30, 0.44];
@@ -215,19 +274,34 @@ pub struct FrameInstances {
     pub roots: Vec<Instance>,
     /// The sun disc.
     pub sun: Vec<Instance>,
+    /// Rain and snow shafts.
+    pub rain: Vec<Instance>,
+    /// Smoke plumes over fires.
+    pub smoke: Vec<Instance>,
+    /// Orographic cap clouds.
+    pub caps: Vec<Instance>,
 }
 
 impl FrameInstances {
     fn stream(&self, k: usize) -> &[Instance] {
+        if let Some(sp) = stream::TREES.iter().position(|&t| t == k) {
+            return &self.trees[sp];
+        }
+        if let Some(g) = stream::GRASS.iter().position(|&t| t == k) {
+            return &self.grass[g];
+        }
+        if let Some(c) = stream::CLOUDS.iter().position(|&t| t == k) {
+            return &self.clouds[c];
+        }
         match k {
             stream::GROUND => &self.ground,
-            1..=4 => &self.trees[k - 1],
-            5..=8 => &self.grass[k - 5],
             stream::MUSHROOMS => &self.mushrooms,
-            10..=13 => &self.clouds[k - 10],
             stream::BOLTS => &self.bolts,
             stream::ROOTS => &self.roots,
-            _ => &self.sun,
+            stream::SUN => &self.sun,
+            stream::RAIN => &self.rain,
+            stream::SMOKE => &self.smoke,
+            _ => &self.caps,
         }
     }
 
@@ -321,6 +395,10 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             let tr = kind.traits();
             let s = (storm.radius / CLOUD_MESH_RADIUS * ramp * fill * grow as f64) as f32;
             let base = CLOUD_COLORS[kind as usize];
+            // In-cloud lightning: a subtle glow from inside the thunderhead
+            // (only when flashes are on — see `View::flashes`).
+            let glow = 1.0 + 0.45 * (view.flashes && storm.glow > 0) as u8 as f32;
+            let base = [base[0] * glow, base[1] * glow, base[2] * glow];
             out.clouds[kind as usize].push(Instance {
                 // Cloud decks sit above the highest ridge.
                 pos: [c[0] as f32, c[1] as f32, altitude + world.max_elevation()],
@@ -332,6 +410,48 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                 slim: tr.optical_depth * weight * fade as f32,
                 // Anvils stream and cirrus streaks lie along this layer's wind.
                 lean: [storm.vel[0] as f32, storm.vel[1] as f32],
+                gloss: 0.0,
+            });
+        }
+        // Precipitation shafts: full curtains under raining clouds (snow
+        // over cold ground), and virga — streaks that evaporate before
+        // reaching the ground — under drying clouds and cirrus.
+        let raining = world.precipitating(storm);
+        let virga = !raining
+            && (storm.kind == crate::sim::world::CloudKind::Cirrus
+                || (dynamic && storm.water > 0.08 && storm.water <= 0.3));
+        if (raining || virga) && ramp > 0.5 {
+            let tile = world.grid().pick(c[0], c[1]);
+            let ground_z = tile.map_or(0.0, |i| world.elevation(i));
+            let base_z = altitude + world.max_elevation();
+            let height = (base_z - ground_z).max(1.0);
+            let snow = raining
+                && world.params().climate_zones > 0.0
+                && tile.is_some_and(|i| world.temperature(i) < crate::sim::world::SNOW_PRECIP_T);
+            let tr = storm.kind.traits();
+            let (radius, reach, intensity, dark) = if raining {
+                let core = if tr.rains { tr.rain_core } else { 0.5 };
+                let dark = match storm.kind {
+                    crate::sim::world::CloudKind::Cumulonimbus => 0.9,
+                    crate::sim::world::CloudKind::Nimbostratus => 0.6,
+                    _ => 0.4,
+                };
+                (storm.radius * core, 1.0, 0.55, dark)
+            } else if storm.kind == crate::sim::world::CloudKind::Cirrus {
+                (storm.radius * 0.35, 0.25, 0.25, 0.1)
+            } else {
+                (storm.radius * 0.4, 0.45, 0.3, 0.4)
+            };
+            out.rain.push(Instance {
+                pos: [c[0] as f32, c[1] as f32, base_z],
+                scale: (radius * fade) as f32,
+                // For shafts the second scale slot carries the length.
+                prev_scale: height,
+                // [reach toward the ground 0..1, darkness, snow flag]
+                color: [reach, dark, if snow { 1.0 } else { 0.0 }],
+                slim: intensity,
+                lean: [storm.vel[0] as f32, storm.vel[1] as f32],
+                gloss: 0.0,
             });
         }
     }
@@ -385,7 +505,10 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
         }
         // Snow lies above the snowline: set by altitude, lower on shaded
         // slopes, creeping down in cold years.
-        let snow = world.snow_cover_at(i, SEASON_SNOW * winter(view.season_phase) as f64 * view.season_amp as f64);
+        // Snow: the climatic snowline plus whatever snowpack storms laid.
+        let snow = world
+            .snow_cover_at(i, SEASON_SNOW * winter(view.season_phase) as f64 * view.season_amp as f64)
+            .max((world.snowpack(i) * 2.5).min(1.0));
         if snow > 0.0 {
             ground = lerp3(ground, SNOW, snow * 0.85);
         }
@@ -404,7 +527,21 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             // Through the glass: groundwater glows blue beneath the soil.
             ground = lerp3(ground, GROUNDWATER, world.water_table(i) * 0.8);
         }
-        out.ground.push(Instance { pos, scale: 1.0, prev_scale: 1.0, color: ground, slim: 0.0, lean: [0.0, 0.0] });
+        if view.biomes {
+            ground = lerp3(ground, BIOME_COLORS[world.biome(i) as usize], 0.75);
+        }
+        // Gloss: rain-slick ground shines, puddles linger in wet hollows;
+        // parched open ground cracks.
+        let gloss = if world.is_channel(i) {
+            0.8
+        } else if wet > 0.0 || world.water_table(i) > 0.75 {
+            (wet * 0.8).max((world.water_table(i) - 0.75) * 2.0)
+        } else if state != Cell::Tree && snow == 0.0 {
+            -((world.browning(i) - 0.35) / 0.65).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        out.ground.push(Instance { pos, scale: 1.0, prev_scale: 1.0, color: ground, slim: 0.0, lean: [0.0, 0.0], gloss });
         if world.bolt_active(i) {
             out.bolts.push(Instance {
                 pos,
@@ -413,6 +550,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                 color: BOLT_WHITE,
                 slim: 0.0,
                 lean: [0.0, 0.0],
+                gloss: 0.0,
             });
         }
 
@@ -441,6 +579,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                 },
                 slim: if r.tree { r.etiolation } else { 0.0 },
                 lean: [0.0, 0.0],
+                gloss: 0.0,
             };
             if r.tree {
                 out.trees[r.species as usize].push(inst);
@@ -463,6 +602,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                     color: if r.charred { MUSHROOM_ON_CHAR } else { MUSHROOM },
                     slim: 0.0,
                     lean: [0.0, 0.0],
+                    gloss: 0.0,
                 });
             }
         }
@@ -538,6 +678,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                         color: lerp3(ROOT_DRY, ROOT_WET, tapped),
                         slim: 0.0,
                         lean: [0.0, 0.0],
+                        gloss: 0.0,
                     });
                 }
                 out.trees[sp as usize].push(Instance {
@@ -546,6 +687,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                     prev_scale: scaled(age.saturating_sub(1)),
                     slim: world.etiolation(i),
                     lean,
+                    gloss: 0.0,
                     color: if burning {
                         SCORCH
                     } else {
@@ -590,6 +732,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                     prev_scale: scaled(age.saturating_sub(1)),
                     slim: 0.0,
                     lean: [0.0, 0.0],
+                    gloss: 0.0,
                     color: if burning {
                         SCORCH
                     } else {
@@ -599,6 +742,45 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                 });
             }
             Cell::Bare => unreachable!(),
+        }
+    }
+    // Smoke plumes over fires, leaning downwind; cap clouds on high peaks
+    // when moist air rides over them.
+    let (wind_dir, wind_speed) = world.wind_at(tick);
+    let range = world.altitude_range().max(1e-6);
+    let moist = world.moisture();
+    for i in 0..grid.cells() {
+        if world.burning(i) && cell_noise(i, 11) < 0.3 {
+            let (x, y) = grid.center(i);
+            let s = (0.35 + 0.25 * cell_noise(i, 12)) as f32;
+            out.smoke.push(Instance {
+                pos: [x as f32, y as f32, world.elevation(i) + 0.3],
+                scale: s,
+                prev_scale: s,
+                color: [0.5, 0.5, 0.5],
+                slim: 1.4,
+                lean: [wind_dir[0] as f32, wind_dir[1] as f32],
+                gloss: 0.0,
+            });
+        }
+        if moist > 0.55
+            && world.params().climate_zones > 0.0
+            && world.altitude(i) > 0.88 * range
+            && cell_noise(i, 13) < 0.012
+        {
+            let (x, y) = grid.center(i);
+            let tau = (((moist - 0.55) * 8.0).min(3.0) * wind_speed.min(0.4) / 0.4) as f32;
+            if tau > 0.2 {
+                out.caps.push(Instance {
+                    pos: [x as f32, y as f32, world.elevation(i) + 1.6],
+                    scale: 0.4,
+                    prev_scale: 0.4,
+                    color: [1.0, 1.0, 1.0],
+                    slim: tau,
+                    lean: [wind_dir[0] as f32, wind_dir[1] as f32],
+                    gloss: 0.0,
+                });
+            }
         }
     }
     // The sun, out along the light direction over the map: bigger, hotter
@@ -621,6 +803,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             color: lerp3(SUN_MILD, SUN_HOT, h),
             slim: 0.0,
             lean: [0.0, 0.0],
+            gloss: 0.0,
         });
     }
     // Cloud shadows, per-genus depth, interpolated with the drift — only
@@ -664,13 +847,14 @@ mod tests {
 
     #[test]
     fn instance_layout_matches_the_shader_stride() {
-        assert_eq!(std::mem::size_of::<Instance>(), 44);
+        assert_eq!(std::mem::size_of::<Instance>(), 48);
         assert_eq!(std::mem::offset_of!(Instance, pos), 0);
         assert_eq!(std::mem::offset_of!(Instance, scale), 12);
         assert_eq!(std::mem::offset_of!(Instance, prev_scale), 16);
         assert_eq!(std::mem::offset_of!(Instance, color), 20);
         assert_eq!(std::mem::offset_of!(Instance, slim), 32);
         assert_eq!(std::mem::offset_of!(Instance, lean), 36);
+        assert_eq!(std::mem::offset_of!(Instance, gloss), 44);
     }
 
     #[test]
@@ -1185,6 +1369,24 @@ mod tests {
         });
         let dry = build_view(&w, 50, 0.0, &View::default());
         assert!(dry.clouds[CloudKind::Cumulonimbus as usize][0].slim < 0.3 * CloudKind::Cumulonimbus.traits().optical_depth);
+    }
+
+    #[test]
+    fn every_shader_vertex_input_has_a_buffer_attribute() {
+        // A shader input the pipeline doesn't feed makes wgpu reject the
+        // pipeline at startup (a wasm panic) — catch it natively: each
+        // @location in VsIn must appear in gpu.rs's vertex_attr_array lists.
+        let wgsl = include_str!("scene.wgsl");
+        let gpu = include_str!("gpu.rs");
+        let vs_in = &wgsl[wgsl.find("struct VsIn").unwrap()..];
+        let vs_in = &vs_in[..vs_in.find("};").unwrap()];
+        let mut locations = 0;
+        for part in vs_in.split("@location(").skip(1) {
+            let n: u32 = part[..part.find(')').unwrap()].parse().unwrap();
+            assert!(gpu.contains(&format!("{n} => Float32")), "shader input @location({n}) has no buffer attribute");
+            locations += 1;
+        }
+        assert_eq!(locations, 4 + 7, "4 vertex + 7 instance attributes (pos, scale, prev, color, slim, lean, gloss)");
     }
 
 }

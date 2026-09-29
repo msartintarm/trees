@@ -7,7 +7,7 @@
 use tree_engine::sim::world::{Cell, DeathCause, Params, World, DEATH_CAUSE_COUNT, GRASS_KIND_COUNT, SPECIES_COUNT};
 
 const TYPES: usize = SPECIES_COUNT + GRASS_KIND_COUNT;
-const NAMES: [&str; TYPES] = ["acacia", "oak", "pine", "willow", "bunch", "sod", "sedge", "annual"];
+const NAMES: [&str; TYPES] = ["acacia", "oak", "pine", "willow", "spruce", "birch", "creosote", "bunch", "sod", "sedge", "annual", "reeds", "cactus"];
 
 fn main() {
     let a: Vec<String> = std::env::args().collect();
