@@ -398,9 +398,46 @@ Result (256², seed 7): γ 4.92 → 5.90 with biomes; deserts ~9% of the
 map with cactus and creosote, reed marshes, boreal spruce–pine–birch.
 Known: no rainbows — physically impossible with the fixed 56° sun.
 
+## P29 — Stunning biomes + walking the world ✅
+Render: a continuous terrain surface through the tile centers (the hex
+grid's dual is a triangular lattice — one vertex per tile, chunk-culled),
+with exaggerated biome landforms on top of the simulated relief (dune
+fields across the wind, mesa terraces in dry uplands, ridged alpine peaks,
+tundra hummocks; rivers and wetlands stay level). Per-biome procedural
+ground materials in the shader — bump from a height field per material
+(frost polygons, moss cushions, leaf litter, laterite + termite mounds,
+wind ripples, faceted rock), parallax on rock/sand/tundra near the viewer,
+ragged noise-jittered ecotones between the top two materials, snow drifts
+with glints, drought cracks, flowing water with sky reflection, fresnel,
+sun glint and bank foam; static valley occlusion + per-frame canopy
+occlusion. The hex columns stay as a toggle (⬢ Columns), sharing the same
+materials; walls reach down only to the lowest neighbor. A sky dome
+(gradient, sunset glow, stars, moon); a moving sun by time of day and
+season — which, as time speeds up, smears into its daily arc (a long
+exposure) while the light settles to the day's average, so fast time never
+strobes; light looks (clock, golden hour, dusk, night). HDR target with
+bloom and a soft-knee tone map + regional grade; two shadow cascades;
+backlit leaves; bark kinds (furrowed, birch lenticels, pine plates,
+smooth); far-LOD trees, frustum culling, near-field grass scatter,
+wildflowers, shrubs; particles (pollen/dust, blowing snow, fireflies,
+autumn leaves); stumps and houses. Every shader entry point is translated
+to GLSL ES 3.00 under `cargo test` (the WebGL path).
+Play (`engine/src/play/`): the wanderer — walk/sprint/jump, trunk and
+house collisions, wading, step-up ledges (walk up small steps, jump the
+tall ones — the same rules on smooth ground and hex terraces), first and
+third person with a colliding camera boom. Time flows with movement:
+~1 game hour per real second standing still, a year per ~30 s of walking,
+sprinting faster, holding R rests through years; actions are time-lapses
+(fell a tree: a season; plant: weeks; build a house from 6 timber: two
+years). Sim: `DeathCause::Logged` (stumps), `built` tiles where nothing
+grows.
+
 ## Ideas / not done
-- A moving sun (day/season elevation) — would allow rainbows and long
-  evening shadows
+- Rainbows (the sun can now sit low opposite a rain shaft)
+- Terrain geometric LOD (the lattice mesh is cheap enough so far) and
+  tessellated near-field micro-relief
+- Houses as a sim force (clearings, gardens, grazing animals, paths)
+- Save/load a walk (the world is seed + params + an action log)
 - True speciation: reproductive isolation between diverged lineages (currently traits blend freely)
 - Pioneer persistence in closed forests (gap dynamics beyond windthrow)
 - Herbivores (browsers) for acacia's thorn/ant defenses

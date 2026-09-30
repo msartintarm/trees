@@ -6,7 +6,7 @@
 // callbacks.
 
 import type { EngineModule, Renderer, Sim } from "./engineTypes.ts";
-import { BRUSH_CODES, type Control, type InitConfig, type StatsSnapshot } from "./protocol.ts";
+import { BRUSH_CODES, type Control, type InitConfig, type StatsSnapshot, type WalkSnapshot } from "./protocol.ts";
 
 export type ReadyInfo = { backend: string; seed: number };
 
@@ -50,8 +50,25 @@ async function loadEngine(config: InitConfig): Promise<EngineModule> {
   return mod;
 }
 
+function walkSnapshot(sim: Sim): WalkSnapshot | null {
+  if (!sim.walking()) return null;
+  const [years, dayFrac, daysPerSec, lapse, wood, wading, third, yearFrac] = sim.walk_status();
+  return {
+    years,
+    dayFrac,
+    daysPerSec,
+    lapse,
+    wood,
+    wading: wading > 0,
+    thirdPerson: third > 0,
+    yearFrac,
+    message: sim.walk_message(),
+    target: sim.target_label(),
+  };
+}
+
 function snapshot(sim: Sim, biomeView: boolean): StatsSnapshot {
-  const [bare, grass, trees, burning, storms, infested] = sim.counts();
+  const [bare, grass, trees, burning, storms, infested, houses] = sim.counts();
   return {
     tick: sim.tick(),
     bare,
@@ -72,6 +89,8 @@ function snapshot(sim: Sim, biomeView: boolean): StatsSnapshot {
     heat: sim.heat(),
     localDiversity: sim.local_diversity(),
     flooding: sim.flooding(),
+    houses: houses ?? 0,
+    walk: walkSnapshot(sim),
     playing: sim.is_playing(),
     selectedSpeed: sim.selected_speed(),
     actualSpeed: sim.actual_speed(),
@@ -101,9 +120,9 @@ export async function startEngineSession(
   let disposed = false;
   let biomeView = false;
   let last = performance.now();
-  // The renderer's soil slab tracks the map size (it changes on reseed).
-  let gridW = 0;
-  let gridH = 0;
+  // The renderer's terrain is re-uploaded whenever the engine rebuilds it
+  // (reseed, landscape params, the ground materials drifting).
+  let terrainVersion = -1;
   let rafId = 0;
 
   const frame = (t: number): void => {
@@ -113,24 +132,18 @@ export async function startEngineSession(
     last = t;
     try {
       sim.advance(dt);
-      if (sim.grid_width() !== gridW || sim.grid_height() !== gridH) {
-        gridW = sim.grid_width();
-        gridH = sim.grid_height();
-        renderer.set_grid(gridW, gridH);
-      }
       sim.prepare_frame();
-      renderer.render(
-        sim.view_proj(),
-        sim.alpha(),
-        sim.light_level(),
-        sim.heat(),
-        sim.eye(),
-        sim.light_view_proj(),
-        sim.atmosphere(),
-        sim.frame_bytes(),
-        sim.frame_counts(),
-        sim.roots_view(),
-      );
+      if (sim.terrain_version() !== terrainVersion) {
+        terrainVersion = sim.terrain_version();
+        renderer.set_terrain(
+          sim.terrain_vertices(),
+          sim.terrain_indices(),
+          sim.terrain_chunks(),
+          sim.skirt_vertices(),
+          sim.skirt_indices(),
+        );
+      }
+      renderer.render(sim.frame_uniforms(), sim.frame_bytes(), sim.frame_counts(), sim.render_flags());
       cb.onFrame({ snapshot: snapshot(sim, biomeView) });
     } catch (e) {
       disposed = true;
@@ -221,6 +234,45 @@ export async function startEngineSession(
         break;
       case "flashes":
         sim.set_flashes(c.on);
+        break;
+      case "walk":
+        sim.enter_walk(c.bx, c.by);
+        break;
+      case "exitWalk":
+        sim.exit_walk();
+        break;
+      case "keys":
+        sim.set_keys(c.bits);
+        break;
+      case "look":
+        sim.look(c.dyaw, c.dpitch);
+        break;
+      case "act":
+        sim.act(c.action, c.species, c.grass);
+        break;
+      case "inspectTarget":
+        cb.onInspect(sim.inspect_target());
+        break;
+      case "thirdPerson":
+        sim.toggle_third_person();
+        break;
+      case "hexColumns":
+        sim.set_hex_columns(c.on);
+        break;
+      case "landforms":
+        sim.set_landforms(c.on);
+        break;
+      case "lightMode":
+        sim.set_light_mode(c.mode);
+        break;
+      case "bloom":
+        sim.set_bloom(c.on);
+        break;
+      case "detail":
+        sim.set_detail(c.value);
+        break;
+      case "hexOverlay":
+        sim.set_hex_overlay(c.on);
         break;
       case "biomeView":
         biomeView = c.on;

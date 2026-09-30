@@ -6,6 +6,8 @@
 
 use bytemuck::{Pod, Zeroable};
 
+use crate::render::camera::in_view;
+use crate::render::surface::Surface;
 use crate::sim::hex;
 use crate::sim::rng::mix64;
 use crate::sim::world::{Cell, Species, World, BROWSE_SCAR_MAX, BROWSE_SETBACK, GRASS_KIND_COUNT, SPECIES_COUNT};
@@ -46,7 +48,28 @@ pub mod stream {
     pub const SMOKE: usize = RAIN + 1;
     /// Orographic cap clouds on peaks.
     pub const CAP: usize = SMOKE + 1;
-    pub const COUNT: usize = CAP + 1;
+    /// Distant trees (the far level of detail), one stream per species.
+    const TREE_LOD0: usize = CAP + 1;
+    /// Stumps of felled trees.
+    pub const STUMPS: usize = TREE_LOD0 + SPECIES_COUNT;
+    /// The wanderer's houses.
+    pub const HOUSES: usize = STUMPS + 1;
+    /// Near-field understory: wildflower patches and shrubs.
+    pub const FLOWERS: usize = HOUSES + 1;
+    pub const SHRUBS: usize = FLOWERS + 1;
+    /// Ambient motes near the viewer: pollen/dust, snow, fireflies, leaves.
+    pub const PARTICLES: usize = SHRUBS + 1;
+    pub const COUNT: usize = PARTICLES + 1;
+
+    pub const TREES_LOD: [usize; SPECIES_COUNT] = {
+        let mut a = [0; SPECIES_COUNT];
+        let mut k = 0;
+        while k < SPECIES_COUNT {
+            a[k] = TREE_LOD0 + k;
+            k += 1;
+        }
+        a
+    };
 
     pub const TREES: [usize; SPECIES_COUNT] = {
         let mut a = [0; SPECIES_COUNT];
@@ -88,6 +111,79 @@ pub struct View {
     /// Lightning flashes shown (the comfort setting).
     pub flashes: bool,
 }
+
+/// Where the viewer is and what they can see — enables frustum culling,
+/// levels of detail, near-field scatter, particles, and (walking) the
+/// clouds' visual drift. `None` renders everything at full detail at tile
+/// centers (the tests' and probes' view).
+#[derive(Clone, Copy, Debug)]
+pub struct Focus {
+    pub eye: [f64; 3],
+    pub view_proj: [f32; 16],
+    /// Center of attention (the wanderer's feet or the orbit target).
+    pub center: [f64; 2],
+    /// Trees farther than this draw their far LOD.
+    pub tree_full: f64,
+    /// Grass farther than this isn't drawn (the ground carries its tint).
+    pub grass_far: f64,
+    /// Near-field radius: scattered extra tufts, flowers, and shrubs.
+    pub near: f64,
+    /// Particle radius around the center (0 = none).
+    pub particles: f64,
+    /// Visual cloud offset (walking: clouds race as time flies).
+    pub cloud_drift: [f64; 2],
+    /// Daylight 0..1 (fireflies come out at dusk).
+    pub daylight: f64,
+}
+
+/// Particle kinds (carried in the instance's `slim`).
+pub mod particle {
+    pub const DUST: f32 = 0.0;
+    pub const SNOW: f32 = 1.0;
+    pub const FIREFLY: f32 = 2.0;
+    pub const LEAF: f32 = 3.0;
+}
+
+/// A tree's position jitter within its tile when drawn with a focus (so
+/// forests don't read as a lattice). The wanderer collides with trunks at
+/// the same offset.
+pub fn tree_offset(index: usize) -> [f64; 2] {
+    let a = cell_noise(index, 21) as f64 * std::f64::consts::TAU;
+    let r = 0.32 * (cell_noise(index, 22) as f64).sqrt();
+    [r * a.cos(), r * a.sin()]
+}
+
+/// Trunk radius of a tree of a species at render scale 1 (collisions).
+pub fn trunk_radius(species: usize) -> f64 {
+    [0.12, 0.19, 0.10, 0.13, 0.09, 0.08, 0.2][species.min(SPECIES_COUNT - 1)]
+}
+
+/// Wildflower colors by biome (wetland … desert), and shrub colors.
+const FLOWER_COLORS: [[[f32; 3]; 2]; crate::sim::world::BIOME_COUNT] = [
+    [[0.95, 0.85, 0.30], [0.75, 0.45, 0.85]],
+    [[0.85, 0.60, 0.90], [0.98, 0.98, 0.92]],
+    [[0.92, 0.92, 0.95], [0.75, 0.35, 0.60]],
+    [[0.98, 0.96, 0.90], [0.55, 0.45, 0.90]],
+    [[0.98, 0.82, 0.18], [0.62, 0.35, 0.85]],
+    [[0.98, 0.55, 0.20], [0.95, 0.90, 0.60]],
+    [[1.00, 0.55, 0.15], [0.95, 0.80, 0.25]],
+];
+const SHRUB_COLORS: [[f32; 3]; crate::sim::world::BIOME_COUNT] = [
+    [0.22, 0.40, 0.20],
+    [0.40, 0.36, 0.22],
+    [0.16, 0.30, 0.18],
+    [0.22, 0.40, 0.14],
+    [0.42, 0.46, 0.22],
+    [0.46, 0.44, 0.24],
+    [0.50, 0.50, 0.38],
+];
+/// Surface kinds for props, in the instance's `gloss` slot (the ground
+/// uses it for wet sheen / cracks): 0 = foliage (backlit translucency),
+/// wood (log grain, no sway), other (plain).
+pub const SURFACE_WOOD: f32 = 2.0;
+pub const SURFACE_OTHER: f32 = 3.0;
+const HOUSE_WALL: [f32; 3] = [0.52, 0.36, 0.22];
+const STUMP_BARK: [f32; 3] = [0.34, 0.26, 0.18];
 
 /// Ticks a plant takes to reach full size.
 const GRASS_GROW_TICKS: f64 = 5.0;
@@ -280,6 +376,14 @@ pub struct FrameInstances {
     pub smoke: Vec<Instance>,
     /// Orographic cap clouds.
     pub caps: Vec<Instance>,
+    /// Far-LOD trees, per species.
+    pub trees_lod: [Vec<Instance>; SPECIES_COUNT],
+    pub stumps: Vec<Instance>,
+    pub houses: Vec<Instance>,
+    pub flowers: Vec<Instance>,
+    pub shrubs: Vec<Instance>,
+    /// Ambient motes (see `particle` for the encoding).
+    pub particles: Vec<Instance>,
 }
 
 impl FrameInstances {
@@ -293,8 +397,16 @@ impl FrameInstances {
         if let Some(c) = stream::CLOUDS.iter().position(|&t| t == k) {
             return &self.clouds[c];
         }
+        if let Some(sp) = stream::TREES_LOD.iter().position(|&t| t == k) {
+            return &self.trees_lod[sp];
+        }
         match k {
             stream::GROUND => &self.ground,
+            stream::STUMPS => &self.stumps,
+            stream::HOUSES => &self.houses,
+            stream::FLOWERS => &self.flowers,
+            stream::SHRUBS => &self.shrubs,
+            stream::PARTICLES => &self.particles,
             stream::MUSHROOMS => &self.mushrooms,
             stream::BOLTS => &self.bolts,
             stream::ROOTS => &self.roots,
@@ -350,6 +462,19 @@ fn winter(phase: f32) -> f32 {
 }
 
 pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameInstances {
+    build_scene(world, tick, alpha, view, &Surface::flat_from(world), None)
+}
+
+/// The full scene over a display surface, optionally culled and detailed
+/// for a viewer (see [`Focus`]).
+pub fn build_scene(
+    world: &World,
+    tick: u64,
+    alpha: f32,
+    view: &View,
+    surface: &Surface,
+    focus: Option<&Focus>,
+) -> FrameInstances {
     let mut out = FrameInstances {
         ground: Vec::with_capacity(world.grid().cells()),
         ..Default::default()
@@ -357,9 +482,20 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
     // Clouds ride the wind: position at `tick` minus the residual of this
     // tick's step gives smooth motion between ticks.
     let back = 1.0 - alpha as f64;
+    let (bx0, by0, bx1, by1) = world.grid().world_bounds();
+    let drift = focus.map_or([0.0, 0.0], |f| f.cloud_drift);
     let render_pos = |s: &crate::sim::world::Storm| {
-        [s.pos[0] - s.vel[0] * back, s.pos[1] - s.vel[1] * back]
+        let p = [s.pos[0] - s.vel[0] * back, s.pos[1] - s.vel[1] * back];
+        if drift == [0.0, 0.0] {
+            return p;
+        }
+        // Drifted clouds wrap around the map (beyond its edges, so the
+        // wrap happens out of sight).
+        let m = 30.0;
+        let wrap = |v: f64, lo: f64, hi: f64| lo - m + (v - (lo - m)).rem_euclid(hi - lo + 2.0 * m);
+        [wrap(p[0] + drift[0], bx0, bx1), wrap(p[1] + drift[1], by0, by1)]
     };
+    let top = surface.max_height().max(world.max_elevation());
     let storms: Vec<([f64; 2], f64, f32)> = world
         .storms()
         .iter()
@@ -401,7 +537,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             let base = [base[0] * glow, base[1] * glow, base[2] * glow];
             out.clouds[kind as usize].push(Instance {
                 // Cloud decks sit above the highest ridge.
-                pos: [c[0] as f32, c[1] as f32, altitude + world.max_elevation()],
+                pos: [c[0] as f32, c[1] as f32, altitude + top],
                 scale: s,
                 prev_scale: s,
                 color: [base[0] * jitter, base[1] * jitter, base[2] * jitter],
@@ -422,8 +558,8 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                 || (dynamic && storm.water > 0.08 && storm.water <= 0.3));
         if (raining || virga) && ramp > 0.5 {
             let tile = world.grid().pick(c[0], c[1]);
-            let ground_z = tile.map_or(0.0, |i| world.elevation(i));
-            let base_z = altitude + world.max_elevation();
+            let ground_z = tile.map_or(0.0, |_| surface.height_at(c[0], c[1]) as f32);
+            let base_z = altitude + top;
             let height = (base_z - ground_z).max(1.0);
             let snow = raining
                 && world.params().climate_zones > 0.0
@@ -459,8 +595,31 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
     for i in 0..grid.cells() {
         let (q, r) = grid.index_to_axial(i);
         let (x, y) = hex::axial_to_world(q, r);
-        let pos = [x as f32, y as f32, world.elevation(i) as f32];
+        let pos = [x as f32, y as f32, surface.tile_height(i)];
         let state = world.state(i);
+        // Viewer-relative culling and level of detail.
+        let (vis, dist) = match focus {
+            Some(f) => {
+                let p = [x, y, pos[2] as f64 + 1.2];
+                let d = ((p[0] - f.eye[0]).powi(2) + (p[1] - f.eye[1]).powi(2) + (p[2] - f.eye[2]).powi(2)).sqrt();
+                (in_view(&f.view_proj, p, 3.0), d)
+            }
+            None => (true, 0.0),
+        };
+        // Trees stand jittered within their tile when there's a viewer.
+        let tree_pos = if focus.is_some() {
+            let o = tree_offset(i);
+            [(x + o[0]) as f32, (y + o[1]) as f32, surface.height_at(x + o[0], y + o[1]) as f32]
+        } else {
+            pos
+        };
+        // Neighboring trees: shade on the ground, a darker understory.
+        let mut tree_nbrs = 0u32;
+        for (dq, dr) in hex::NEIGHBORS {
+            if let Some(j) = grid.axial_to_index(q + dq, r + dr) {
+                tree_nbrs += (world.state(j) == Cell::Tree) as u32;
+            }
+        }
 
         let burning = world.burning(i);
         let shade = 0.92 + 0.16 * cell_noise(i, 1);
@@ -541,7 +700,33 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
         } else {
             0.0
         };
-        out.ground.push(Instance { pos, scale: 1.0, prev_scale: 1.0, color: ground, slim: 0.0, lean: [0.0, 0.0], gloss });
+        // The sward: with a viewer, grass tints the ground it grows on, so
+        // meadows stay green where tufts thin out with distance.
+        if focus.is_some() && state == Cell::Grass && !burning {
+            let k = world.grass_kind(i) as usize;
+            let tint = lerp3(GRASS_YOUNG[k], GRASS_WILT, world.browning(i));
+            ground = lerp3(ground, tint, 0.45);
+        }
+        // Per-vertex terrain extras for the ground shader: snow (scale),
+        // canopy occlusion (prev_scale), open water (slim), grass cover and
+        // fire (lean).
+        let canopy_ao = (1.0 - 0.07 * tree_nbrs as f32 - if state == Cell::Tree { 0.12 } else { 0.0 }).max(0.45);
+        let water = if world.is_channel(i) {
+            1.0
+        } else if world.inundated(i) {
+            0.7
+        } else {
+            0.0
+        };
+        out.ground.push(Instance {
+            pos,
+            scale: snow,
+            prev_scale: canopy_ao,
+            color: ground,
+            slim: water,
+            lean: [(state == Cell::Grass) as u8 as f32, burning as u8 as f32],
+            gloss,
+        });
         if world.bolt_active(i) {
             out.bolts.push(Instance {
                 pos,
@@ -554,10 +739,26 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             });
         }
 
+        if !vis {
+            continue;
+        }
         // Standing dead: a husk shrinks from the exact size the plant died
         // at (growth curve + wilt, same per-cell noise) down to nothing, so
-        // the prev/current lerp carries it out smoothly.
-        if let Some(r) = world.remains(i) {
+        // the prev/current lerp carries it out smoothly. A felled tree
+        // leaves a stump instead, rotting away the same way.
+        if let Some(r) = world.remains(i).filter(|r| r.tree && r.cause == crate::sim::world::DeathCause::Logged) {
+            let s = (0.6 + 0.6 * (r.age_at_death as f32 / 80.0).min(1.0)) * r.remaining.min(1.0).sqrt();
+            let sp = (0.6 + 0.6 * (r.age_at_death as f32 / 80.0).min(1.0)) * r.remaining_prev.min(1.0).sqrt();
+            out.stumps.push(Instance {
+                pos: tree_pos,
+                scale: s,
+                prev_scale: sp,
+                color: lerp3(STUMP_BARK, SNAG, 1.0 - r.remaining),
+                slim: 0.0,
+                lean: [0.0, 0.0],
+                gloss: SURFACE_WOOD,
+            });
+        } else if let Some(r) = world.remains(i) {
             let (grow_ticks, mature_base, mature_span, salt) = if r.tree {
                 (TREE_GROW_TICKS * r.species.traits().maturity, 0.8, 0.4, 2)
             } else {
@@ -567,7 +768,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             let died_scale = grow_scale(r.age_at_death as u64, grow_ticks, mature) as f64
                 * wilt_mult(r.life_ratio as f64);
             let inst = Instance {
-                pos,
+                pos: if r.tree { tree_pos } else { pos },
                 scale: (died_scale * r.remaining as f64) as f32,
                 prev_scale: (died_scale * r.remaining_prev as f64) as f32,
                 color: if r.charred {
@@ -581,7 +782,9 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                 lean: [0.0, 0.0],
                 gloss: 0.0,
             };
-            if r.tree {
+            if r.tree && dist > focus.map_or(f64::INFINITY, |f| f.tree_full) {
+                out.trees_lod[r.species as usize].push(inst);
+            } else if r.tree {
                 out.trees[r.species as usize].push(inst);
             } else {
                 out.grass[r.species as usize % GRASS_KIND_COUNT].push(inst);
@@ -602,11 +805,62 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                     color: if r.charred { MUSHROOM_ON_CHAR } else { MUSHROOM },
                     slim: 0.0,
                     lean: [0.0, 0.0],
-                    gloss: 0.0,
+                    gloss: SURFACE_OTHER,
                 });
             }
         }
 
+        // Near-field understory: wildflowers in open meadows (in bloom from
+        // spring into summer), shrubs on open ground.
+        if let Some(f) = focus {
+            if dist < f.near && state != Cell::Tree && !world.is_channel(i) && !world.is_built(i) && snow < 0.5 {
+                let biome = world.biome(i) as usize;
+                let phase = view.season_phase.rem_euclid(1.0);
+                let bloom = view.season_amp < 0.5 || (0.08..0.6).contains(&phase);
+                let wet_desert = biome == crate::sim::world::Biome::Desert as usize && world.moisture() > 0.55;
+                let flower_p = match biome {
+                    4 | 1 => 0.35,
+                    3 | 5 => 0.2,
+                    6 => if wet_desert { 0.5 } else { 0.03 },
+                    _ => 0.12,
+                };
+                if bloom && state == Cell::Grass && cell_noise(i, 70) < flower_p {
+                    let a = cell_noise(i, 71) as f64 * std::f64::consts::TAU;
+                    let (px, py) = (x + 0.5 * a.cos(), y + 0.5 * a.sin());
+                    let c = FLOWER_COLORS[biome][(cell_noise(i, 72) < 0.5) as usize];
+                    let s = 0.8 + 0.5 * cell_noise(i, 73);
+                    out.flowers.push(Instance {
+                        pos: [px as f32, py as f32, surface.height_at(px, py) as f32],
+                        scale: s,
+                        prev_scale: s,
+                        color: c,
+                        slim: 0.0,
+                        lean: [0.0, 0.0],
+                        gloss: 0.0,
+                    });
+                }
+                let shrub_p = match biome {
+                    6 | 5 => 0.22,
+                    1 | 2 => 0.18,
+                    _ => 0.06,
+                };
+                if cell_noise(i, 74) < shrub_p {
+                    let a = cell_noise(i, 75) as f64 * std::f64::consts::TAU;
+                    let (px, py) = (x + 0.55 * a.cos(), y + 0.55 * a.sin());
+                    let s = 0.7 + 0.6 * cell_noise(i, 76);
+                    let dry = world.browning(i);
+                    out.shrubs.push(Instance {
+                        pos: [px as f32, py as f32, surface.height_at(px, py) as f32],
+                        scale: s,
+                        prev_scale: s,
+                        color: lerp3(SHRUB_COLORS[biome], GRASS_WILT, dry * 0.6),
+                        slim: 0.0,
+                        lean: [0.0, 0.0],
+                        gloss: 0.0,
+                    });
+                }
+            }
+        }
         if state == Cell::Bare {
             continue;
         }
@@ -678,11 +932,15 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                         color: lerp3(ROOT_DRY, ROOT_WET, tapped),
                         slim: 0.0,
                         lean: [0.0, 0.0],
-                        gloss: 0.0,
+                        gloss: SURFACE_OTHER,
                     });
                 }
-                out.trees[sp as usize].push(Instance {
-                    pos,
+                // Crowded stands read darker inside (canopy occlusion).
+                let crowd = if focus.is_some() { 1.0 - 0.035 * tree_nbrs as f32 } else { 1.0 };
+                let far = dist > focus.map_or(f64::INFINITY, |f| f.tree_full);
+                let dest = if far { &mut out.trees_lod[sp as usize] } else { &mut out.trees[sp as usize] };
+                dest.push(Instance {
+                    pos: tree_pos,
                     scale: scaled(age),
                     prev_scale: scaled(age.saturating_sub(1)),
                     slim: world.etiolation(i),
@@ -710,7 +968,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                         let c = lerp3(c, SPRING_FLUSH, flush * decid * 0.6);
                         let c = lerp3(c, AUTUMN[sp as usize], autumn * decid);
                         let c = lerp3(c, BARE_TWIGS, bare * 0.9);
-                        [c[0] * bright, c[1] * bright, c[2] * bright]
+                        [c[0] * bright * crowd, c[1] * bright * crowd, c[2] * bright * crowd]
                     },
                 });
             }
@@ -726,20 +984,36 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                     (grow_scale(a, GRASS_GROW_TICKS, mature) as f64 * wilt_mult(brown)) as f32
                 };
                 let dormant = winter(view.season_phase) * view.season_amp;
-                out.grass[kind].push(Instance {
-                    pos,
-                    scale: scaled(age),
-                    prev_scale: scaled(age.saturating_sub(1)),
-                    slim: 0.0,
-                    lean: [0.0, 0.0],
-                    gloss: 0.0,
-                    color: if burning {
-                        SCORCH
-                    } else {
-                        let c = lerp3(lerp3(GRASS_YOUNG[kind], GRASS_OLD, tint), GRASS_WILT, brown as f32);
-                        lerp3(c, STRAW, dormant * 0.7)
-                    },
-                });
+                if dist > focus.map_or(f64::INFINITY, |f| f.grass_far) {
+                    continue;
+                }
+                let color = if burning {
+                    SCORCH
+                } else {
+                    let c = lerp3(lerp3(GRASS_YOUNG[kind], GRASS_OLD, tint), GRASS_WILT, brown as f32);
+                    lerp3(c, STRAW, dormant * 0.7)
+                };
+                let (s0, s1) = (scaled(age), scaled(age.saturating_sub(1)));
+                out.grass[kind].push(Instance { pos, scale: s0, prev_scale: s1, slim: 0.0, lean: [0.0, 0.0], gloss: 0.0, color });
+                // Near the viewer a sward is a scatter of tufts, not one.
+                if dist < focus.map_or(0.0, |f| f.near) {
+                    for k in 0..3u64 {
+                        let a = cell_noise(i, 30 + k) as f64 * std::f64::consts::TAU;
+                        let rr = 0.45 + 0.35 * cell_noise(i, 40 + k) as f64;
+                        let (px, py) = (x + rr * a.cos(), y + rr * a.sin());
+                        let f = 0.6 + 0.3 * cell_noise(i, 50 + k);
+                        let shade = 0.9 + 0.2 * cell_noise(i, 60 + k);
+                        out.grass[kind].push(Instance {
+                            pos: [px as f32, py as f32, surface.height_at(px, py) as f32],
+                            scale: s0 * f,
+                            prev_scale: s1 * f,
+                            slim: 0.0,
+                            lean: [0.0, 0.0],
+                            gloss: 0.0,
+                            color: color.map(|c| c * shade),
+                        });
+                    }
+                }
             }
             Cell::Bare => unreachable!(),
         }
@@ -754,7 +1028,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             let (x, y) = grid.center(i);
             let s = (0.35 + 0.25 * cell_noise(i, 12)) as f32;
             out.smoke.push(Instance {
-                pos: [x as f32, y as f32, world.elevation(i) + 0.3],
+                pos: [x as f32, y as f32, surface.tile_height(i) + 0.3],
                 scale: s,
                 prev_scale: s,
                 color: [0.5, 0.5, 0.5],
@@ -772,7 +1046,7 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
             let tau = (((moist - 0.55) * 8.0).min(3.0) * wind_speed.min(0.4) / 0.4) as f32;
             if tau > 0.2 {
                 out.caps.push(Instance {
-                    pos: [x as f32, y as f32, world.elevation(i) + 1.6],
+                    pos: [x as f32, y as f32, surface.tile_height(i) + 1.6],
                     scale: 0.4,
                     prev_scale: 0.4,
                     color: [1.0, 1.0, 1.0],
@@ -780,6 +1054,76 @@ pub fn build_view(world: &World, tick: u64, alpha: f32, view: &View) -> FrameIns
                     lean: [wind_dir[0] as f32, wind_dir[1] as f32],
                     gloss: 0.0,
                 });
+            }
+        }
+    }
+    // The wanderer's houses (weathering grey with age is left to the log
+    // texture; the walls keep their honey color).
+    for i in 0..grid.cells() {
+        if !world.is_built(i) {
+            continue;
+        }
+        let (x, y) = grid.center(i);
+        let p = [x as f32, y as f32, surface.tile_height(i)];
+        if let Some(f) = focus {
+            if !in_view(&f.view_proj, [x, y, p[2] as f64 + 0.6], 2.0) {
+                continue;
+            }
+        }
+        out.houses.push(Instance { pos: p, scale: 1.0, prev_scale: 1.0, color: HOUSE_WALL, slim: 0.0, lean: [0.0, 0.0], gloss: SURFACE_WOOD });
+    }
+    // Ambient motes around the viewer, animated in the shader: pollen and
+    // dust on dry windy ground, blowing snow, fireflies over summer wetlands
+    // and woods at dusk, falling leaves under autumn crowns.
+    if let Some(f) = focus.filter(|f| f.particles > 0.0) {
+        let phase = view.season_phase.rem_euclid(1.0);
+        let seasonal = view.season_amp > 0.5;
+        let summer = !seasonal || (0.25..0.6).contains(&phase);
+        let autumn = seasonal && (0.55..0.8).contains(&phase);
+        let dusk = f.daylight < 0.55;
+        let (wind, speed) = world.wind_at(tick);
+        let windy = speed > 0.15;
+        let dry = world.moisture() < 0.5;
+        for i in grid.cells_in_box(f.center, f.particles) {
+            if out.particles.len() >= 1500 {
+                break;
+            }
+            let (x, y) = grid.center(i);
+            if (x - f.center[0]).powi(2) + (y - f.center[1]).powi(2) > f.particles * f.particles {
+                continue;
+            }
+            let z = surface.tile_height(i);
+            let biome = world.biome(i) as usize;
+            let snowy = world.snowpack(i) > 0.15 || world.snow_cover(i) > 0.5;
+            let kind = if snowy && (windy || cell_noise(i, 80) < 0.15) {
+                Some((particle::SNOW, 0.6, [0.95, 0.97, 1.0], 0.045))
+            } else if world.state(i) == Cell::Tree && autumn && world.species(i).traits().deciduous > 0.0 {
+                let sp = world.species(i) as usize;
+                Some((particle::LEAF, 0.5, AUTUMN[sp], 0.06))
+            } else if dusk && summer && (biome == 0 || biome == 3) && world.state(i) != Cell::Bare {
+                Some((particle::FIREFLY, 0.3, [1.6, 1.5, 0.5], 0.03))
+            } else if windy && dry && (biome >= 4) {
+                Some((particle::DUST, 0.35, [0.85, 0.76, 0.55], 0.03))
+            } else {
+                None
+            };
+            if let Some((k, p, color, size)) = kind {
+                for n in 0..2u64 {
+                    if cell_noise(i, 81 + n) >= p {
+                        continue;
+                    }
+                    let (ox, oy) = (cell_noise(i, 83 + n) as f64 - 0.5, cell_noise(i, 85 + n) as f64 - 0.5);
+                    out.particles.push(Instance {
+                        pos: [(x + 1.6 * ox) as f32, (y + 1.6 * oy) as f32, z + 0.2 + 1.8 * cell_noise(i, 87 + n)],
+                        scale: size,
+                        prev_scale: size,
+                        color,
+                        slim: k,
+                        lean: [(wind[0] * speed) as f32, (wind[1] * speed) as f32],
+                        // Per-mote phase for the shader's animation.
+                        gloss: cell_noise(i, 89 + n),
+                    });
+                }
             }
         }
     }
@@ -1387,6 +1731,112 @@ mod tests {
             locations += 1;
         }
         assert_eq!(locations, 4 + 7, "4 vertex + 7 instance attributes (pos, scale, prev, color, slim, lean, gloss)");
+        // The terrain and hex-column inputs likewise.
+        for (name, expect) in [("struct TerrainIn", 12), ("struct ColumnIn", 14)] {
+            let block = &wgsl[wgsl.find(name).unwrap()..];
+            let block = &block[..block.find("};").unwrap()];
+            let mut n_loc = 0;
+            for part in block.split("@location(").skip(1) {
+                let n: u32 = part[..part.find(')').unwrap()].parse().unwrap();
+                assert!(gpu.contains(&format!("{n} => Float32")), "{name} @location({n}) has no buffer attribute");
+                n_loc += 1;
+            }
+            assert_eq!(n_loc, expect, "{name}");
+        }
     }
 
+
+    fn focus_on(w: &World, eye: [f64; 3], fwd: [f64; 3]) -> Focus {
+        let cam = crate::render::camera::LookCamera {
+            eye,
+            fwd,
+            viewport: [800.0, 600.0],
+            fov_y: crate::render::camera::WALK_FOV_Y,
+            near: 0.05,
+            far: 500.0,
+        };
+        let _ = w;
+        Focus {
+            eye,
+            view_proj: cam.view_proj(),
+            center: [eye[0], eye[1]],
+            tree_full: 20.0,
+            grass_far: 30.0,
+            near: 8.0,
+            particles: 0.0,
+            cloud_drift: [0.0, 0.0],
+            daylight: 1.0,
+        }
+    }
+
+    #[test]
+    fn a_viewer_culls_what_is_behind_them_and_simplifies_what_is_far() {
+        use crate::sim::world::Params;
+        let w = World::with_params(5, Params { seed_tree_p: 0.05, seed_grass_p: 0.2, ..legacy() });
+        let surface = Surface::flat_from(&w);
+        let all = build_instances(&w, 0, 0.0);
+        let total_trees: usize = all.trees.iter().map(|v| v.len()).sum();
+        // Stand at the map's west edge looking east: everything is ahead.
+        let (_, _, mx, my) = w.grid().world_bounds();
+        let f = focus_on(&w, [-5.0, my / 2.0, 8.0], [1.0, 0.0, -0.1]);
+        let ahead = build_scene(&w, 0, 0.0, &View::default(), &surface, Some(&f));
+        let near: usize = ahead.trees.iter().map(|v| v.len()).sum();
+        let far: usize = ahead.trees_lod.iter().map(|v| v.len()).sum();
+        assert!(near > 0 && far > 0, "near {near} far {far}");
+        assert!(near + far > total_trees * 6 / 10, "most of the map is in view: {} of {total_trees}", near + far);
+        assert_eq!(ahead.ground.len(), w.grid().cells(), "the ground stream is never culled");
+        // Turn around: the map is behind you.
+        let f = focus_on(&w, [-5.0, my / 2.0, 8.0], [-1.0, 0.0, -0.1]);
+        let behind = build_scene(&w, 0, 0.0, &View::default(), &surface, Some(&f));
+        let n: usize = behind.trees.iter().chain(behind.trees_lod.iter()).map(|v| v.len()).sum();
+        assert!(n < total_trees / 20, "{n} trees drawn behind the viewer");
+        let _ = mx;
+    }
+
+    #[test]
+    fn near_meadows_scatter_extra_tufts_and_understory() {
+        use crate::sim::world::Params;
+        let w = World::with_params(6, Params { seed_grass_p: 0.6, ..legacy() });
+        let surface = Surface::flat_from(&w);
+        let (_, _, mx, my) = w.grid().world_bounds();
+        let c = [mx / 2.0, my / 2.0];
+        let far_view = build_instances(&w, 0, 0.0);
+        let f = focus_on(&w, [c[0] - 3.0, c[1], 2.0], [1.0, 0.0, -0.3]);
+        let near_view = build_scene(&w, 0, 0.0, &View::default(), &surface, Some(&f));
+        let tufts = |f: &FrameInstances| f.grass.iter().map(|v| v.len()).sum::<usize>();
+        assert!(tufts(&near_view) > 0);
+        assert!(!near_view.flowers.is_empty() || !near_view.shrubs.is_empty(), "an understory near the viewer");
+        assert!(far_view.flowers.is_empty() && far_view.shrubs.is_empty(), "no scatter without a viewer");
+    }
+
+    #[test]
+    fn felled_trees_leave_stumps_and_houses_render() {
+        let mut w = inert_world(12);
+        w.paint(5, crate::sim::world::Brush::Tree, 0);
+        w.fell_tree(5, 300).unwrap();
+        assert!(w.build_house(100, 300));
+        let f = build_instances(&w, 300, 0.0);
+        assert_eq!(f.stumps.len(), 1, "a stump, not a standing husk");
+        assert!(f.trees.iter().all(|v| v.is_empty()));
+        assert_eq!(f.houses.len(), 1);
+        assert_eq!(f.houses[0].pos[2], w.elevation(100));
+    }
+
+    #[test]
+    fn autumn_woods_shed_leaves_around_the_viewer() {
+        use crate::sim::world::{Brush, Species};
+        let mut w = inert_world(13);
+        for i in 0..400 {
+            w.paint_species(i, Brush::Tree, Species::Oak, 0);
+        }
+        let surface = Surface::flat_from(&w);
+        let (x, y) = w.grid().center(200);
+        let mut f = focus_on(&w, [x, y - 6.0, 2.0], [0.0, 1.0, -0.2]);
+        f.particles = 12.0;
+        let autumn = View { season_phase: 0.65, season_amp: 1.0, ..View::default() };
+        let spring = View { season_phase: 0.1, season_amp: 1.0, ..View::default() };
+        let leaves = |v: &View| build_scene(&w, 50, 0.0, v, &surface, Some(&f)).particles.iter().filter(|p| p.slim == particle::LEAF).count();
+        assert!(leaves(&autumn) > 10, "autumn leaves: {}", leaves(&autumn));
+        assert_eq!(leaves(&spring), 0);
+    }
 }

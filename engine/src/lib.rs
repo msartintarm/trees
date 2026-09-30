@@ -5,6 +5,7 @@
 //! gated behind `target_arch = "wasm32"`, mirroring the sibling `../traffic`
 //! project.
 
+pub mod play;
 pub mod render;
 pub mod sim;
 

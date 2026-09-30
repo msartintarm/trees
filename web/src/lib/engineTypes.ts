@@ -56,25 +56,27 @@ export type Sim = {
   pan_pixels(dx: number, dy: number): void;
   zoom(factor: number): void;
   reset_camera(): void;
-  view_proj(): Float32Array;
-  light_view_proj(): Float32Array;
   prepare_frame(): void;
   grid_width(): number;
   grid_height(): number;
   actual_speed(): number;
-  alpha(): number;
   sun(): number;
   moisture(): number;
-  light_level(): number;
   mast_year(): boolean;
   diversity(): number;
   local_diversity(): number;
   flooding(): boolean;
-  eye(): Float32Array;
   pick_tile(bx: number, by: number): number;
   paint_at(bx: number, by: number, brush: number, species: number, grass: number): number;
-  prepare_frame(): void;
   frame_bytes(): Uint8Array;
+  frame_uniforms(): Float32Array;
+  render_flags(): number;
+  terrain_version(): number;
+  terrain_vertices(): Uint8Array;
+  terrain_indices(): Uint32Array;
+  terrain_chunks(): Float32Array;
+  skirt_vertices(): Uint8Array;
+  skirt_indices(): Uint32Array;
   frame_counts(): Uint32Array;
   heat(): number;
   set_roots_view(on: boolean): void;
@@ -83,30 +85,44 @@ export type Sim = {
   deaths_recent(): Float32Array;
   cloud_counts(): Uint32Array;
   cloud_events(): Uint32Array;
-  atmosphere(): Float32Array;
   set_biome_view(on: boolean): void;
   set_flashes(on: boolean): void;
   biome_shares(): Float32Array;
   biome_samples(): Float32Array;
+  // Display settings.
+  set_hex_columns(on: boolean): void;
+  set_landforms(on: boolean): void;
+  set_light_mode(mode: number): void;
+  set_bloom(on: boolean): void;
+  set_detail(detail: number): void;
+  set_hex_overlay(on: boolean): void;
+  // Walking.
+  enter_walk(bx: number, by: number): void;
+  exit_walk(): void;
+  walking(): boolean;
+  set_keys(bits: number): void;
+  look(dyaw: number, dpitch: number): void;
+  toggle_third_person(): void;
+  act(action: number, species: number, grass: number): string;
+  inspect_target(): string;
+  target_label(): string;
+  walk_status(): Float32Array;
+  walk_message(): string;
 };
 
 export type Renderer = {
   free(): void;
   backend(): string;
   resize(w: number, h: number): void;
-  set_grid(width: number, height: number): void;
-  render(
-    viewProj: Float32Array,
-    alpha: number,
-    light: number,
-    heat: number,
-    eye: Float32Array,
-    lightVp: Float32Array,
-    atmos: Float32Array,
-    bytes: Uint8Array,
-    counts: Uint32Array,
-    rootsView: boolean,
+  hdr(): boolean;
+  set_terrain(
+    vertices: Uint8Array,
+    indices: Uint32Array,
+    chunks: Float32Array,
+    skirtVertices: Uint8Array,
+    skirtIndices: Uint32Array,
   ): void;
+  render(uniforms: Float32Array, bytes: Uint8Array, counts: Uint32Array, flags: number): void;
 };
 
 export type EngineModule = {

@@ -1,7 +1,7 @@
 // Pure snapshot→string formatting for the HUD, kept out of the component so
 // the exact readout is unit-tested.
 
-import { CLOUD_EVENTS, DEATH_CAUSES, type StatsSnapshot } from "./protocol.ts";
+import { CLOUD_EVENTS, DEATH_CAUSES, type StatsSnapshot, type WalkSnapshot } from "./protocol.ts";
 
 function group(n: number): string {
   return Math.floor(n).toLocaleString("en-US");
@@ -74,7 +74,55 @@ export function statsText(s: StatsSnapshot): string {
   const storm = s.storms > 0 ? ` · ⛈ ${group(s.storms)}` : "";
   const pests = s.infested > 0 ? ` · 🐛 ${group(s.infested)}` : "";
   const flood = s.flooding ? " · 🌊 flood" : "";
+  const houses = s.houses > 0 ? ` · 🏠 ${group(s.houses)}` : "";
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const climate = ` · ☀ ${pct(s.sun)} 💧 ${pct(s.moisture)}${s.mast ? " 🌰" : ""}`;
-  return `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · trees ${group(s.trees)} · grass ${group(s.grass)} · bare ${group(s.bare)} · ${diversityLabel(s)}${climate}${storm}${flood}${fire}${pests} · ${speedLabel(s)}`;
+  return `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · trees ${group(s.trees)} · grass ${group(s.grass)} · bare ${group(s.bare)} · ${diversityLabel(s)}${climate}${storm}${flood}${fire}${pests}${houses} · ${speedLabel(s)}`;
+}
+
+const SEASONS = ["spring", "summer", "autumn", "winter"];
+
+/** The season for a point in the year (0 = start of spring), e.g. "late
+ * spring". */
+export function seasonLabel(yearFrac: number): string {
+  const f = ((yearFrac % 1) + 1) % 1;
+  const k = Math.min(3, Math.floor(f * 4));
+  const third = Math.min(2, Math.floor((f * 4 - k) * 3));
+  return `${["early", "mid", "late"][third]} ${SEASONS[k]}`;
+}
+
+/** Days per real second above which days blur (matches the engine's
+ * sky::BLUR_START). */
+export const DAY_BLUR = 0.25;
+
+/** How fast time flows, e.g. "⏱ 1.0 h/s", "⏩ 12 days/s", "⏩ 1.5 yr/s". */
+export function paceLabel(daysPerSec: number): string {
+  const hours = daysPerSec * 24;
+  if (hours < 12) return `⏱ ${hours.toFixed(1)} h/s`;
+  if (daysPerSec < 60) return `⏩ ${daysPerSec < 10 ? daysPerSec.toFixed(1) : Math.round(daysPerSec)} days/s`;
+  return `⏩ ${(daysPerSec / 365).toFixed(1)} yr/s`;
+}
+
+/** Clock time for a day fraction, "14:05" — or a blur when days flash by. */
+export function clockLabel(dayFrac: number, daysPerSec: number): string {
+  if (daysPerSec >= DAY_BLUR) return "days blur past";
+  const minutes = Math.floor((((dayFrac % 1) + 1) % 1) * 24 * 60);
+  const hh = String(Math.floor(minutes / 60)).padStart(2, "0");
+  const mm = String(minutes % 60).padStart(2, "0");
+  return `${hh}:${mm}`;
+}
+
+/** The wanderer's readout: "🧭 year 3 · late spring · 14:05 · ⏱ 1.0 h/s ·
+ * 🪵 4.2 timber" (+ wading). */
+export function walkText(w: WalkSnapshot): string {
+  const year = Math.floor(w.years) + 1;
+  const parts = [
+    `🧭 year ${year}`,
+    seasonLabel(w.yearFrac),
+    clockLabel(w.dayFrac, w.daysPerSec),
+    paceLabel(w.daysPerSec),
+    `🪵 ${w.wood.toFixed(1)} timber`,
+  ];
+  if (w.wading) parts.push("🌊 wading");
+  return parts.join(" · ");
 }

@@ -120,6 +120,14 @@ pub fn tile_top_mesh() -> MeshData {
     m
 }
 
+/// A hex column for the stepped surface: full-size (no seams), a unit
+/// deep — the shader stretches each wall down to its lowest neighbor.
+pub fn column_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    hex_prism(&mut m, SIZE as f32, -1.0, 0.0, [1.0; 3], 0.0);
+    m
+}
+
 pub fn tile_mesh() -> MeshData {
     let mut m = MeshData::new();
     hex_prism(&mut m, SIZE as f32 * TILE_INSET, -TILE_HEIGHT, 0.0, [1.0; 3], 0.0);
@@ -131,6 +139,19 @@ const TRUNK_COLOR: [f32; 3] = [0.36, 0.25, 0.15];
 const CATTAIL: [f32; 3] = [0.40, 0.26, 0.14];
 /// Birch's chalk-white bark.
 const BIRCH_BARK: [f32; 3] = [0.88, 0.86, 0.82];
+/// Pine's cinnamon plates, spruce's grey-brown scales, acacia's grey.
+const PINE_BARK: [f32; 3] = [0.50, 0.28, 0.16];
+const SPRUCE_BARK: [f32; 3] = [0.34, 0.27, 0.22];
+const ACACIA_BARK: [f32; 3] = [0.42, 0.38, 0.33];
+
+/// Bark kinds ride in a baked vertex's material weight above 1 (the shader
+/// clamps the color mix at 1 and reads the kind from the excess):
+/// furrowed (oak, willow), birch (white with dark lenticels), plated
+/// (pine, spruce), smooth-fissured (acacia).
+pub const BARK_FURROWED: f32 = 1.0;
+pub const BARK_BIRCH: f32 = 1.125;
+pub const BARK_PLATED: f32 = 1.25;
+pub const BARK_SMOOTH: f32 = 1.375;
 
 /// One silhouette per species (canopies take the instance color, trunks are
 /// baked brown): flat-top acacia, broad oak, spired pine, drooping willow.
@@ -145,7 +166,7 @@ pub fn tree_mesh_for(species: usize) -> MeshData {
         }
         2 => {
             // Pine: narrow stacked spire.
-            cylinder(&mut m, 10, 0.0, 0.0, 0.10, 0.0, 0.55, TRUNK_COLOR, 1.0);
+            cylinder(&mut m, 10, 0.0, 0.0, 0.10, 0.0, 0.55, PINE_BARK, BARK_PLATED);
             cone(&mut m, 16, 0.0, 0.0, 0.52, 0.35, 1.35, [1.0; 3], 0.0);
             cone(&mut m, 16, 0.0, 0.0, 0.42, 1.05, 1.95, [1.0; 3], 0.0);
             cone(&mut m, 16, 0.0, 0.0, 0.30, 1.65, 2.65, [1.0; 3], 0.0);
@@ -158,7 +179,7 @@ pub fn tree_mesh_for(species: usize) -> MeshData {
         }
         4 => {
             // Spruce: a dense, narrow, dark spire of many tiers to the ground.
-            cylinder(&mut m, 8, 0.0, 0.0, 0.09, 0.0, 0.35, TRUNK_COLOR, 1.0);
+            cylinder(&mut m, 8, 0.0, 0.0, 0.09, 0.0, 0.35, SPRUCE_BARK, BARK_PLATED);
             for (k, r) in [0.62f32, 0.54, 0.46, 0.38, 0.30, 0.22].iter().enumerate() {
                 let z = 0.2 + 0.42 * k as f32;
                 cone(&mut m, 14, 0.0, 0.0, *r, z, z + 0.72, [1.0; 3], 0.0);
@@ -166,7 +187,7 @@ pub fn tree_mesh_for(species: usize) -> MeshData {
         }
         5 => {
             // Birch: a slender white trunk and a small, airy, open crown.
-            cylinder(&mut m, 8, 0.0, 0.0, 0.08, 0.0, 1.7, BIRCH_BARK, 1.0);
+            cylinder(&mut m, 8, 0.0, 0.0, 0.08, 0.0, 1.7, BIRCH_BARK, BARK_BIRCH);
             for (x, y, z, r) in [(0.0f32, 0.0f32, 1.5f32, 0.42f32), (0.25, 0.1, 1.2, 0.3), (-0.22, -0.12, 1.3, 0.3), (0.05, -0.05, 1.9, 0.3)] {
                 cone(&mut m, 12, x, y, r, z, z + 0.55, [1.0; 3], 0.0);
                 cone(&mut m, 12, x, y, r, z, z - 0.25, [1.0; 3], 0.0);
@@ -184,7 +205,7 @@ pub fn tree_mesh_for(species: usize) -> MeshData {
         }
         _ => {
             // Acacia: tall bare trunk, flat umbrella crown.
-            cylinder(&mut m, 10, 0.0, 0.0, 0.12, 0.0, 1.15, TRUNK_COLOR, 1.0);
+            cylinder(&mut m, 10, 0.0, 0.0, 0.12, 0.0, 1.15, ACACIA_BARK, BARK_SMOOTH);
             cone(&mut m, 18, 0.0, 0.0, 0.98, 1.05, 1.55, [1.0; 3], 0.0);
             cone(&mut m, 18, 0.0, 0.0, 0.45, 1.45, 1.85, [1.0; 3], 0.0);
         }
@@ -212,8 +233,11 @@ pub fn grass_mesh_for(kind: usize) -> MeshData {
     let mut m = MeshData::new();
     match kind {
         1 => {
-            // Sod: a low continuous mat almost covering the tile.
-            hex_prism(&mut m, 0.66, 0.0, 0.10, [1.0; 3], 0.0);
+            // Sod: a low continuous mat of cushions almost covering the
+            // tile, half-buried so it hugs slopes instead of floating.
+            for (x, y, r) in [(0.0f32, 0.0f32, 0.34f32), (0.36, 0.12, 0.28), (-0.34, 0.16, 0.28), (0.1, -0.36, 0.3), (-0.2, -0.3, 0.26), (0.18, 0.38, 0.26)] {
+                ellipsoid_n(&mut m, [x, y, -0.04], [r, r, 0.14], 3, 8);
+            }
         }
         2 => {
             // Sedge: a clump of stiff upright spears.
@@ -461,6 +485,173 @@ pub fn bolt_mesh() -> MeshData {
     m
 }
 
+
+/// A distant tree: the species' silhouette in a handful of faces (the far
+/// level of detail).
+pub fn tree_lod_mesh_for(species: usize) -> MeshData {
+    let mut m = MeshData::new();
+    match species {
+        1 => {
+            cylinder(&mut m, 4, 0.0, 0.0, 0.19, 0.0, 0.85, TRUNK_COLOR, 1.0);
+            ellipsoid_n(&mut m, [0.0, 0.0, 1.45], [0.9, 0.9, 0.8], 5, 6);
+        }
+        2 => {
+            cylinder(&mut m, 4, 0.0, 0.0, 0.10, 0.0, 0.55, PINE_BARK, 1.0);
+            cone(&mut m, 6, 0.0, 0.0, 0.5, 0.35, 2.65, [1.0; 3], 0.0);
+        }
+        3 => {
+            cylinder(&mut m, 4, 0.0, 0.0, 0.13, 0.0, 0.95, TRUNK_COLOR, 1.0);
+            ellipsoid_n(&mut m, [0.0, 0.0, 1.35], [0.82, 0.82, 0.7], 5, 6);
+        }
+        4 => {
+            cone(&mut m, 6, 0.0, 0.0, 0.62, 0.15, 2.9, [1.0; 3], 0.0);
+        }
+        5 => {
+            cylinder(&mut m, 4, 0.0, 0.0, 0.08, 0.0, 1.3, BIRCH_BARK, 1.0);
+            ellipsoid_n(&mut m, [0.0, 0.0, 1.6], [0.45, 0.45, 0.6], 4, 6);
+        }
+        6 => {
+            ellipsoid_n(&mut m, [0.0, 0.0, 0.3], [0.55, 0.55, 0.4], 4, 6);
+        }
+        _ => {
+            cylinder(&mut m, 4, 0.0, 0.0, 0.12, 0.0, 1.15, ACACIA_BARK, 1.0);
+            cone(&mut m, 7, 0.0, 0.0, 0.98, 1.05, 1.7, [1.0; 3], 0.0);
+        }
+    }
+    m
+}
+
+/// A coarse closed ellipsoid in the instance color.
+fn ellipsoid_n(m: &mut MeshData, c: [f32; 3], r: [f32; 3], bands: usize, sides: usize) {
+    let mut rings: Vec<Vec<u32>> = Vec::new();
+    for b in 0..=bands {
+        let phi = -std::f32::consts::FRAC_PI_2 + std::f32::consts::PI * b as f32 / bands as f32;
+        let (sp, cp) = phi.sin_cos();
+        rings.push(
+            (0..sides)
+                .map(|k| {
+                    let th = std::f32::consts::TAU * k as f32 / sides as f32;
+                    let n = [cp * th.cos(), cp * th.sin(), sp];
+                    m.push([c[0] + r[0] * n[0], c[1] + r[1] * n[1], c[2] + r[2] * n[2]], n, [1.0; 3], 0.0)
+                })
+                .collect(),
+        );
+    }
+    for b in 0..bands {
+        for k in 0..sides {
+            let k1 = (k + 1) % sides;
+            let (a, bb, c2, d) = (rings[b][k], rings[b][k1], rings[b + 1][k1], rings[b + 1][k]);
+            m.indices.extend([a, bb, c2, a, c2, d]);
+        }
+    }
+}
+
+/// Cut-face color of a fresh stump.
+const HEARTWOOD: [f32; 3] = [0.80, 0.66, 0.44];
+
+/// A felled tree's stump: bark sides (instance color) and a pale cut face.
+pub fn stump_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    cylinder(&mut m, 10, 0.0, 0.0, 0.2, 0.0, 0.24, [1.0; 3], 0.0);
+    cone(&mut m, 10, 0.0, 0.0, 0.2, 0.24, 0.245, HEARTWOOD, 1.0);
+    // Buttress roots.
+    for k in 0..4 {
+        let a = std::f32::consts::TAU * k as f32 / 4.0 + 0.3;
+        cone(&mut m, 5, 0.17 * a.cos(), 0.17 * a.sin(), 0.08, 0.0, 0.12, [1.0; 3], 0.0);
+    }
+    m
+}
+
+const ROOF: [f32; 3] = [0.36, 0.20, 0.16];
+const DOOR: [f32; 3] = [0.24, 0.15, 0.09];
+const STONE: [f32; 3] = [0.50, 0.48, 0.45];
+
+/// An axis-aligned box without a floor, one baked color.
+fn solid_box(m: &mut MeshData, lo: [f32; 3], hi: [f32; 3], color: [f32; 3], weight: f32) {
+    let faces: [([f32; 3], [[f32; 3]; 4]); 5] = [
+        ([1.0, 0.0, 0.0], [[hi[0], lo[1], lo[2]], [hi[0], hi[1], lo[2]], [hi[0], hi[1], hi[2]], [hi[0], lo[1], hi[2]]]),
+        ([-1.0, 0.0, 0.0], [[lo[0], hi[1], lo[2]], [lo[0], lo[1], lo[2]], [lo[0], lo[1], hi[2]], [lo[0], hi[1], hi[2]]]),
+        ([0.0, 1.0, 0.0], [[hi[0], hi[1], lo[2]], [lo[0], hi[1], lo[2]], [lo[0], hi[1], hi[2]], [hi[0], hi[1], hi[2]]]),
+        ([0.0, -1.0, 0.0], [[lo[0], lo[1], lo[2]], [hi[0], lo[1], lo[2]], [hi[0], lo[1], hi[2]], [lo[0], lo[1], hi[2]]]),
+        ([0.0, 0.0, 1.0], [[lo[0], lo[1], hi[2]], [hi[0], lo[1], hi[2]], [hi[0], hi[1], hi[2]], [lo[0], hi[1], hi[2]]]),
+    ];
+    for (n, q) in faces {
+        let v: Vec<u32> = q.iter().map(|&p| m.push(p, n, color, weight)).collect();
+        m.indices.extend([v[0], v[1], v[2], v[0], v[2], v[3]]);
+    }
+}
+
+/// The wanderer's house: a log cabin with a gabled roof, a door on the
+/// south side and a stone chimney. Walls take the instance color (they
+/// weather with age); roof, door and chimney are baked.
+pub fn house_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    let (hx, hy, wall, ridge) = (0.62f32, 0.46f32, 0.7f32, 1.18f32);
+    // Log walls (instance-colored, bark-textured in the shader).
+    solid_box(&mut m, [-hx, -hy, -0.3], [hx, hy, wall], [1.0; 3], 0.0);
+    // Door and a window.
+    solid_box(&mut m, [-0.12, -hy - 0.015, 0.0], [0.12, -hy + 0.01, 0.5], DOOR, 1.0);
+    solid_box(&mut m, [0.3, -hy - 0.015, 0.3], [0.48, -hy + 0.01, 0.48], [0.9, 0.8, 0.45], 1.0);
+    // Gabled roof with eaves (ridge along x).
+    let (ex, ey) = (hx + 0.1, hy + 0.14);
+    let slope = |sgn: f32| {
+        let n = [0.0, sgn * (ridge - wall), ey];
+        let l = (n[1] * n[1] + n[2] * n[2]).sqrt();
+        [0.0, n[1] / l, n[2] / l]
+    };
+    for sgn in [-1.0f32, 1.0] {
+        let n = slope(sgn);
+        let p = [[-ex, sgn * ey, wall - 0.04], [ex, sgn * ey, wall - 0.04], [ex, 0.0, ridge], [-ex, 0.0, ridge]];
+        let p = if sgn > 0.0 { [p[1], p[0], p[3], p[2]] } else { p };
+        let v: Vec<u32> = p.iter().map(|&q| m.push(q, n, ROOF, 1.0)).collect();
+        m.indices.extend([v[0], v[1], v[2], v[0], v[2], v[3]]);
+    }
+    // Gable ends.
+    for sx in [-1.0f32, 1.0] {
+        let x = sx * hx;
+        let n = [sx, 0.0, 0.0];
+        let a = m.push([x, -hy, wall], n, [1.0; 3], 0.0);
+        let b = m.push([x, hy, wall], n, [1.0; 3], 0.0);
+        let c = m.push([x, 0.0, ridge - 0.03], n, [1.0; 3], 0.0);
+        m.indices.extend(if sx > 0.0 { [a, b, c] } else { [b, a, c] });
+    }
+    solid_box(&mut m, [0.32, 0.08, 0.5], [0.48, 0.24, ridge + 0.2], STONE, 1.0);
+    m
+}
+
+const FLOWER_STEM: [f32; 3] = [0.24, 0.42, 0.16];
+
+/// A patch of wildflowers: green stems with instance-colored blossoms.
+pub fn flower_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    for (x, y, h) in [(0.0f32, 0.0f32, 0.2f32), (0.14, 0.08, 0.16), (-0.12, 0.1, 0.18), (0.05, -0.15, 0.15), (-0.1, -0.1, 0.13)] {
+        cylinder(&mut m, 3, x, y, 0.01, 0.0, h, FLOWER_STEM, 1.0);
+        cone(&mut m, 6, x, y, 0.05, h, h + 0.02, [1.0; 3], 0.0);
+        cone(&mut m, 6, x, y, 0.05, h, h - 0.02, [1.0; 3], 0.0);
+    }
+    m
+}
+
+/// A low understory shrub: a few overlapping instance-colored domes.
+pub fn shrub_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    for (x, y, r, h) in [(0.0f32, 0.0f32, 0.26f32, 0.24f32), (0.2, 0.1, 0.18, 0.17), (-0.16, 0.14, 0.17, 0.15)] {
+        ellipsoid_n(&mut m, [x, y, 0.02], [r, r, h], 4, 7);
+    }
+    m
+}
+
+/// A particle mote (pollen, snow, firefly, leaf): a tiny octahedron.
+pub fn particle_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    let v = [[1.0f32, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, -1.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]];
+    let ids: Vec<u32> = v.iter().map(|&p| m.push(p, p, [1.0; 3], 0.0)).collect();
+    for (a, b) in [(0, 2), (2, 1), (1, 3), (3, 0)] {
+        m.indices.extend([ids[a], ids[b], ids[4], ids[b], ids[a], ids[5]]);
+    }
+    m
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -611,8 +802,11 @@ mod tests {
         for sp in 0..4 {
             assert!(tree_mesh_for(sp).vertices.iter().all(|v| v.pos[2] >= 0.0));
         }
-        for k in 0..4 {
-            assert!(grass_mesh_for(k).vertices.iter().all(|v| v.pos[2] >= 0.0));
+        for k in 0..crate::sim::world::GRASS_KIND_COUNT {
+            // Sod cushions sit a little into the soil so they hug slopes.
+            let m = grass_mesh_for(k);
+            assert!(m.vertices.iter().all(|v| v.pos[2] >= -0.2), "grass {k} sinks too deep");
+            assert!(m.vertices.iter().any(|v| v.pos[2] > 0.09), "grass {k} stands above the ground");
         }
     }
 }

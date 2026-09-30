@@ -80,11 +80,18 @@ engine/                 Rust crate → wasm (cdylib + rlib)
     hex.rs              axial hex math, disks, picking, world bounds
     world.rs            cell states + the per-tick ecology rules
   src/render/           pure render math + WGSL + wasm-only GPU
-    camera.rs           orbit perspective camera, ground-plane ray picking
-    geometry.rs         baked meshes: tile prism, tree, grass tuft, base slab
-    scene.rs            world → per-frame instance streams (prev/cur scale)
-    scene.wgsl          the one pipeline (naga-validated under cargo test)
+    camera.rs           orbit + walking cameras, picking, culling test
+    geometry.rs         baked meshes: trees (+ far LOD), grass, clouds, props
+    surface.rs          continuous terrain, biome landforms, materials, chunks
+    sky.rs              sun/moon by time of day and season; the day blur
+    scene.rs            world → per-frame instance streams (culled, LOD'd)
+    scene.wgsl          sky, terrain materials, objects, clouds, particles
+    post.wgsl           bloom + tone map + grade (both validated and
+                        translated to WebGL GLSL under cargo test)
     gpu.rs              wgpu Renderer (wasm32 only; WebGPU or WebGL2)
+  src/play/             the walking game, pure and natively tested
+    player.rs           the wanderer: movement, collisions, ledges, camera
+    timeflow.rs         time flowing with movement; actions as time-lapses
   src/bridge.rs         wasm-bindgen Simulation — marshalling only
 web/                    Next.js 15 static export
   scripts/build-wasm.mjs  wasm-pack driver with content-hash skip cache
@@ -99,7 +106,11 @@ web/                    Next.js 15 static export
   src/components/EngineCanvas.tsx  canvas, input, panel, HUD
 ```
 
-Rendering/lighting: hemisphere ambient (cool sky above, warm bounce below) +
+Rendering (P29): a continuous terrain through the tile centers with
+exaggerated biome landforms and per-biome procedural ground materials (or
+hex columns), a sky dome with a moving sun, HDR + bloom + tone map, two
+shadow cascades, backlit leaves, far-LOD trees and frustum culling — see
+PLAN.md P29. Earlier lighting notes: hemisphere ambient (cool sky above, warm bounce below) +
 a directional sun gated by a 2048² shadow map rendered from the sun's view
 (vegetation casts real shadows; clouds keep their soft analytic ones);
 Blinn-Phong specular sheen and a fresnel rim light (the cue that makes the
@@ -184,7 +195,21 @@ npm run dev                    # builds the wasm first (cached by content hash)
 ```
 
 Open http://localhost:3000 — click to plant, drag to orbit, shift/right-drag
-to pan, wheel to zoom. `npm run build` produces the static export in `web/out`.
+to pan, wheel to zoom.
+
+**🚶 Walk** steps down into the world as a long-lived wanderer: click to
+capture the mouse, WASD to move, shift to sprint, space to jump, hold R to
+rest, 1–5 to choose an action (fell, plant, sow, build, fire) and click or E
+to do it, right-click or F to inspect, V for third person, Esc to free the
+mouse, Q (or 🦅 Overview) to fly back up. Time flows with you: standing
+still it crawls (an hour a second — watch a day go by), walking a year
+passes in about half a minute, and every action is a time-lapse of its
+cost. Fast time smears the sun into its daily arc rather than flickering
+day and night. **Ground** switches between the smooth surface and hex
+columns (the same walking rules: small steps you walk up, tall ones you
+jump), toggles biome landforms and a hex grid overlay; **Light** picks the
+clock or a fixed look (golden hour, dusk, night); **Quality** toggles bloom
+and close-up relief. `npm run build` produces the static export in `web/out`.
 
 
 **Performance on big maps.** A tick costs ~115 ns per tile natively (≈7 ms

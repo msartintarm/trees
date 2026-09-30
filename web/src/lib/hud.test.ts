@@ -1,7 +1,18 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { cloudsText, deathsText, diversityLabel, newestCloudEvent, speedLabel, statsText } from "./hud.ts";
+import {
+  clockLabel,
+  cloudsText,
+  deathsText,
+  diversityLabel,
+  newestCloudEvent,
+  paceLabel,
+  seasonLabel,
+  speedLabel,
+  statsText,
+  walkText,
+} from "./hud.ts";
 import type { StatsSnapshot } from "./protocol.ts";
 
 const base: StatsSnapshot = {
@@ -24,6 +35,8 @@ const base: StatsSnapshot = {
   biomeShares: [0, 0, 0, 0, 0, 0, 0],
   biomeSamples: [],
   flooding: false,
+  houses: 0,
+  walk: null,
   playing: true,
   selectedSpeed: 2,
   actualSpeed: 2,
@@ -62,6 +75,10 @@ test("mast years show an acorn badge", () => {
   assert.equal(statsText({ ...base, mast: true }), `${HEAD} · ☀ 64% 💧 41% 🌰 · ▶ 2×`);
 });
 
+test("houses show once built", () => {
+  assert.equal(statsText({ ...base, houses: 2 }), `${HEAD} · ☀ 64% 💧 41% · 🏠 2 · ▶ 2×`);
+});
+
 test("biodiversity reads whole-map and local effective types", () => {
   assert.equal(diversityLabel({ ...base, diversity: 1, localDiversity: 1 }), "🌿 1.0 types (local 1.0)");
   assert.equal(diversityLabel({ ...base, diversity: 5.26, localDiversity: 2.96 }), "🌿 5.3 types (local 3.0)");
@@ -80,7 +97,7 @@ test("fractional speeds keep one decimal", () => {
 
 test("recent deaths list the top three causes", () => {
   assert.equal(deathsText(base), "");
-  const deathsRecent = [4.2, 1.0, 9.6, 0, 0, 12.4, 0, 0.3, 0, 0, 0];
+  const deathsRecent = [4.2, 1.0, 9.6, 0, 0, 12.4, 0, 0.3, 0, 0, 0, 0];
   assert.equal(deathsText({ ...base, deathsRecent }), "☠ pests 12 · starvation 10 · old age 4");
 });
 
@@ -95,4 +112,39 @@ test("the weather ticker announces new transitions, not evaporation", () => {
   assert.equal(newestCloudEvent(a, a), null);
   assert.equal(newestCloudEvent(a, [3, 2, 0, 0, 0, 4, 0]), "⛈ a cumulus towered into a thunderhead");
   assert.equal(newestCloudEvent(a, [3, 1, 0, 0, 0, 9, 0]), null);
+});
+
+test("seasons read early/mid/late", () => {
+  assert.equal(seasonLabel(0), "early spring");
+  assert.equal(seasonLabel(0.2), "late spring");
+  assert.equal(seasonLabel(0.3), "early summer");
+  assert.equal(seasonLabel(0.62), "mid autumn");
+  assert.equal(seasonLabel(0.99), "late winter");
+  assert.equal(seasonLabel(3.3), "early summer");
+});
+
+test("time reads as a clock when slow and a blur when fast", () => {
+  assert.equal(clockLabel(0.5, 0.04), "12:00");
+  assert.equal(clockLabel(0.25 + 5 / 1440, 0.04), "06:05");
+  assert.equal(clockLabel(0.5, 3), "days blur past");
+  assert.equal(paceLabel(1 / 24), "⏱ 1.0 h/s");
+  assert.equal(paceLabel(12.2), "⏩ 12 days/s");
+  assert.equal(paceLabel(4.24), "⏩ 4.2 days/s");
+  assert.equal(paceLabel(548), "⏩ 1.5 yr/s");
+});
+
+test("the wanderer's readout", () => {
+  const w = {
+    years: 2.4,
+    dayFrac: 0.5,
+    daysPerSec: 1 / 24,
+    lapse: 0,
+    wood: 4.25,
+    wading: true,
+    thirdPerson: false,
+    yearFrac: 0.4,
+    message: "",
+    target: "",
+  };
+  assert.equal(walkText(w), "🧭 year 3 · mid summer · 12:00 · ⏱ 1.0 h/s · 🪵 4.3 timber · 🌊 wading");
 });

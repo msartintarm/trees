@@ -42,7 +42,8 @@ pub struct TerrainVertex {
     /// Grassland, savanna, desert, rock.
     pub mat_b: [f32; 4],
     /// [static ambient occlusion 0..1 (1 = open), downslope x, downslope y,
-    /// landform relief 0..1 (how exaggerated the ground is here)].
+    /// column drop: how far this tile's hex column must reach down to meet
+    /// its lowest neighbor (or the floor, at the map edge)].
     pub extra: [f32; 4],
 }
 
@@ -111,6 +112,9 @@ pub struct Surface {
     /// Landform relief per tile, 0..1 (for the shader's detail).
     relief: Vec<f32>,
     max: f32,
+    /// Hex columns: every tile is a flat-topped step (the platformer
+    /// look) instead of a smooth surface through the tile centers.
+    hex: bool,
 }
 
 impl Surface {
@@ -120,7 +124,17 @@ impl Surface {
         let n = world.grid().cells();
         let heights: Vec<f32> = (0..n).map(|i| world.elevation(i)).collect();
         let max = heights.iter().cloned().fold(0.0f32, f32::max).max(world.max_elevation());
-        Surface { grid: world.grid(), heights, relief: vec![0.0; n], max }
+        Surface { grid: world.grid(), heights, relief: vec![0.0; n], max, hex: false }
+    }
+
+    /// The same heights as flat-topped hex columns (or back to smooth).
+    pub fn with_hex(mut self, hex: bool) -> Surface {
+        self.hex = hex;
+        self
+    }
+
+    pub fn is_hex(&self) -> bool {
+        self.hex
     }
 
     /// The display surface: the simulated relief plus biome landforms,
@@ -190,7 +204,7 @@ impl Surface {
             relief.push((r * landforms).clamp(0.0, 1.0) as f32);
         }
         let max = heights.iter().cloned().fold(0.0f32, f32::max);
-        Surface { grid, heights, relief, max }
+        Surface { grid, heights, relief, max, hex: false }
     }
 
     pub fn grid(&self) -> Grid {
@@ -223,6 +237,13 @@ impl Surface {
         let (_, _, max_x, max_y) = self.grid.world_bounds();
         let x = x.clamp(0.0, max_x);
         let y = y.clamp(0.0, max_y);
+        if self.hex {
+            // The containing tile's flat top.
+            return self.grid.pick(x, y).map_or_else(
+                || self.h_at((x / SQRT3).round() as i32, (y / 1.5).round() as i32),
+                |i| self.heights[i] as f64,
+            );
+        }
         let row = ((y / 1.5).floor() as i32).clamp(0, (self.grid.height - 2).max(0));
         if self.grid.height < 2 {
             return self.h_at(((x / SQRT3).round()) as i32, 0);
@@ -261,6 +282,9 @@ impl Surface {
 
     /// Surface normal anywhere (central differences).
     pub fn normal_at(&self, x: f64, y: f64) -> [f64; 3] {
+        if self.hex {
+            return [0.0, 0.0, 1.0];
+        }
         let e = 0.5;
         let dx = (self.height_at(x + e, y) - self.height_at(x - e, y)) / (2.0 * e);
         let dy = (self.height_at(x, y + e) - self.height_at(x, y - e)) / (2.0 * e);
@@ -326,6 +350,8 @@ pub fn terrain_vertices(world: &World, surface: &Surface) -> Vec<TerrainVertex> 
     let weights = biome_weights(world);
     // Mean height within ~3 tiles, for valley occlusion.
     let ring = hex::disk(3);
+    let smooth = surface.clone().with_hex(false);
+    let surface = &smooth;
     (0..n)
         .map(|i| {
             let (x, y) = grid.center(i);
@@ -346,12 +372,22 @@ pub fn terrain_vertices(world: &World, surface: &Surface) -> Vec<TerrainVertex> 
             let gl = (nrm[0] * nrm[0] + nrm[1] * nrm[1]).sqrt();
             let flow = if gl > 1e-4 { [nrm[0] / gl, nrm[1] / gl] } else { [1.0, 0.0] };
             let w = weights[i];
+            // Hex columns only need walls down to the lowest neighbor.
+            let mut low = h;
+            let mut edge = false;
+            for (dq, dr) in hex::NEIGHBORS {
+                match grid.axial_to_index(q + dq, r + dr) {
+                    Some(j) => low = low.min(surface.tile_height(j) as f64),
+                    None => edge = true,
+                }
+            }
+            let drop = if edge { h + super::geometry::TILE_HEIGHT as f64 } else { h - low + 0.15 };
             TerrainVertex {
                 pos: [x as f32, y as f32, h as f32],
                 normal: [nrm[0] as f32, nrm[1] as f32, nrm[2] as f32],
                 mat_a: [w[0] as f32, w[1] as f32, w[2] as f32, w[3] as f32],
                 mat_b: [w[4] as f32, w[5] as f32, w[6] as f32, w[7] as f32],
-                extra: [ao as f32, flow[0] as f32, flow[1] as f32, surface.relief(i)],
+                extra: [ao as f32, flow[0] as f32, flow[1] as f32, drop as f32],
             }
         })
         .collect()
@@ -574,6 +610,18 @@ mod tests {
         if desert_n > 20.0 {
             assert!(desert_lift / desert_n > 0.15, "dunes should sculpt the desert");
         }
+    }
+
+    #[test]
+    fn hex_mode_makes_every_tile_a_flat_step() {
+        let w = world();
+        let s = Surface::build(&w, 1.0).with_hex(true);
+        let i = w.grid().offset_to_index(12, 9).unwrap();
+        let (x, y) = w.grid().center(i);
+        for (dx, dy) in [(0.0, 0.0), (0.5, 0.2), (-0.3, -0.5)] {
+            assert_eq!(s.height_at(x + dx, y + dy), s.tile_height(i) as f64);
+        }
+        assert_eq!(s.normal_at(x, y), [0.0, 0.0, 1.0]);
     }
 
     #[test]

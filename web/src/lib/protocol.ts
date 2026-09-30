@@ -51,7 +51,31 @@ export const DEATH_CAUSES = [
   "windthrow",
   "browsed",
   "flood scour",
+  "logging",
 ] as const;
+
+/** Walking actions, in the engine's `Simulation::act` codes. */
+export const WALK_ACTIONS = [
+  { code: 1, key: "1", label: "🪓 Fell", hint: "fell the tree you face: timber, and a season passes" },
+  { code: 2, key: "2", label: "🌳 Plant tree", hint: "plant a sapling of the chosen species (a few weeks)" },
+  { code: 3, key: "3", label: "🌾 Sow grass", hint: "sow the chosen grass (a few weeks)" },
+  { code: 4, key: "4", label: "🏠 Build", hint: "raise a house from 6 timber: two years pass" },
+  { code: 5, key: "5", label: "🔥 Fire", hint: "light a fire" },
+] as const;
+
+/** Movement key bits (engine `play::player::keys`). */
+export const KEY_BITS = {
+  forward: 1,
+  back: 2,
+  left: 4,
+  right: 8,
+  sprint: 16,
+  jump: 32,
+  rest: 64,
+} as const;
+
+/** Light looks (engine `LightMode`): follow the clock, or a fixed hour. */
+export const LIGHT_MODES = ["☀ Clock", "🌇 Golden hour", "🌆 Dusk", "🌙 Night"] as const;
 
 export const BRUSH_CODES: Record<Brush, number> = { clear: 0, grass: 1, tree: 2, fire: 3 };
 
@@ -71,6 +95,19 @@ export type Control =
   | { type: "rootsView"; on: boolean }
   | { type: "biomeView"; on: boolean }
   | { type: "flashes"; on: boolean }
+  | { type: "walk"; bx: number; by: number }
+  | { type: "exitWalk" }
+  | { type: "keys"; bits: number }
+  | { type: "look"; dyaw: number; dpitch: number }
+  | { type: "act"; action: number; species: TreeSpecies; grass: GrassKind }
+  | { type: "inspectTarget" }
+  | { type: "thirdPerson" }
+  | { type: "hexColumns"; on: boolean }
+  | { type: "landforms"; on: boolean }
+  | { type: "lightMode"; mode: number }
+  | { type: "bloom"; on: boolean }
+  | { type: "detail"; value: number }
+  | { type: "hexOverlay"; on: boolean }
   | { type: "resize"; w: number; h: number };
 
 export const CONTROL_TYPES: ReadonlySet<string> = new Set([
@@ -89,6 +126,19 @@ export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   "rootsView",
   "biomeView",
   "flashes",
+  "walk",
+  "exitWalk",
+  "keys",
+  "look",
+  "act",
+  "inspectTarget",
+  "thirdPerson",
+  "hexColumns",
+  "landforms",
+  "lightMode",
+  "bloom",
+  "detail",
+  "hexOverlay",
   "resize",
 ]);
 
@@ -100,6 +150,27 @@ export function isControl(m: unknown): m is Control {
     CONTROL_TYPES.has((m as { type: unknown }).type as string)
   );
 }
+
+/** The wanderer's state (null in the overview). */
+export type WalkSnapshot = {
+  /** Game years since the walk began (fraction = season). */
+  years: number;
+  /** Time of day, 0..1 (0.5 = noon). */
+  dayFrac: number;
+  /** How fast time is flowing, game days per real second. */
+  daysPerSec: number;
+  /** Years of an action's time-lapse still to play. */
+  lapse: number;
+  wood: number;
+  wading: boolean;
+  thirdPerson: boolean;
+  /** Progress through the current ecology year (the season), 0..1. */
+  yearFrac: number;
+  /** The action under way, or the last action's outcome. */
+  message: string;
+  /** What the crosshair rests on. */
+  target: string;
+};
 
 /** Per-frame HUD payload. */
 export type StatsSnapshot = {
@@ -141,6 +212,9 @@ export type StatsSnapshot = {
   selectedSpeed: number;
   /** Achieved speed; below selectedSpeed when a big map can't keep up. */
   actualSpeed: number;
+  /** Houses the wanderer has built. */
+  houses: number;
+  walk: WalkSnapshot | null;
   /** Current map size in tiles. */
   gridWidth: number;
   gridHeight: number;

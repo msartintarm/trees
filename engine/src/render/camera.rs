@@ -281,6 +281,194 @@ pub fn light_view_proj(sun: [f32; 3], bounds: (f64, f64, f64, f64), top: f64) ->
     out
 }
 
+
+/// A free-look perspective camera (the walking view): an eye and a unit
+/// forward direction, z up.
+#[derive(Clone, Copy, Debug)]
+pub struct LookCamera {
+    pub eye: [f64; 3],
+    pub fwd: [f64; 3],
+    pub viewport: [f64; 2],
+    pub fov_y: f64,
+    pub near: f64,
+    pub far: f64,
+}
+
+/// Field of view of the walking camera.
+pub const WALK_FOV_Y: f64 = 68.0 * std::f64::consts::PI / 180.0;
+
+impl LookCamera {
+    fn basis(&self) -> ([f64; 3], [f64; 3], [f64; 3]) {
+        let fwd = normalize(self.fwd);
+        // Guard the degenerate straight-up/down look.
+        let s = if fwd[2].abs() > 0.999 { [1.0, 0.0, 0.0] } else { normalize(cross(fwd, [0.0, 0.0, 1.0])) };
+        let u = cross(s, fwd);
+        (fwd, s, u)
+    }
+
+    pub fn view_proj(&self) -> [f32; 16] {
+        let (fwd, s, u) = self.basis();
+        perspective(self.eye, fwd, s, u, self.viewport, self.fov_y, self.near, self.far)
+    }
+
+    pub fn screen_ray(&self, bx: f64, by: f64) -> ([f64; 3], [f64; 3]) {
+        let (fwd, s, u) = self.basis();
+        ray(self.eye, fwd, s, u, self.viewport, self.fov_y, bx, by)
+    }
+
+    /// Sky-ray basis for the shader: forward, right × tan·aspect, up × tan.
+    pub fn sky_basis(&self) -> [[f64; 3]; 3] {
+        let (fwd, s, u) = self.basis();
+        sky_basis(fwd, s, u, self.viewport, self.fov_y)
+    }
+}
+
+fn sky_basis(fwd: [f64; 3], s: [f64; 3], u: [f64; 3], viewport: [f64; 2], fov_y: f64) -> [[f64; 3]; 3] {
+    let tan = (fov_y / 2.0).tan();
+    let aspect = viewport[0] / viewport[1];
+    [fwd, s.map(|v| v * tan * aspect), u.map(|v| v * tan)]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn perspective(
+    eye: [f64; 3],
+    fwd: [f64; 3],
+    s: [f64; 3],
+    u: [f64; 3],
+    viewport: [f64; 2],
+    fov_y: f64,
+    near: f64,
+    far: f64,
+) -> [f32; 16] {
+    #[rustfmt::skip]
+    let view = [
+        s[0], u[0], -fwd[0], 0.0,
+        s[1], u[1], -fwd[1], 0.0,
+        s[2], u[2], -fwd[2], 0.0,
+        -dot(s, eye), -dot(u, eye), dot(fwd, eye), 1.0,
+    ];
+    let aspect = viewport[0] / viewport[1];
+    let f = 1.0 / (fov_y / 2.0).tan();
+    #[rustfmt::skip]
+    let proj = [
+        f / aspect, 0.0, 0.0, 0.0,
+        0.0, f, 0.0, 0.0,
+        0.0, 0.0, far / (near - far), -1.0,
+        0.0, 0.0, near * far / (near - far), 0.0,
+    ];
+    let mut out = [0.0f32; 16];
+    for col in 0..4 {
+        for row in 0..4 {
+            let mut v = 0.0;
+            for k in 0..4 {
+                v += proj[k * 4 + row] * view[col * 4 + k];
+            }
+            out[col * 4 + row] = v as f32;
+        }
+    }
+    out
+}
+
+#[allow(clippy::too_many_arguments)]
+fn ray(
+    eye: [f64; 3],
+    fwd: [f64; 3],
+    s: [f64; 3],
+    u: [f64; 3],
+    viewport: [f64; 2],
+    fov_y: f64,
+    bx: f64,
+    by: f64,
+) -> ([f64; 3], [f64; 3]) {
+    let aspect = viewport[0] / viewport[1];
+    let tan = (fov_y / 2.0).tan();
+    let vx = (2.0 * bx / viewport[0] - 1.0) * tan * aspect;
+    let vy = (1.0 - 2.0 * by / viewport[1]) * tan;
+    (eye, normalize([s[0] * vx + u[0] * vy + fwd[0], s[1] * vx + u[1] * vy + fwd[1], s[2] * vx + u[2] * vy + fwd[2]]))
+}
+
+impl Camera {
+    /// Sky-ray basis for the shader (see [`LookCamera::sky_basis`]).
+    pub fn sky_basis(&self) -> [[f64; 3]; 3] {
+        let (fwd, s, u) = self.basis();
+        sky_basis(fwd, s, u, self.viewport, FOV_Y)
+    }
+}
+
+/// Whether a sphere (world point + radius) may be visible through a
+/// view-projection — a conservative clip-space test for culling.
+pub fn in_view(vp: &[f32; 16], p: [f64; 3], radius: f64) -> bool {
+    let c = |row: usize| {
+        vp[row] as f64 * p[0] + vp[4 + row] as f64 * p[1] + vp[8 + row] as f64 * p[2] + vp[12 + row] as f64
+    };
+    let w = c(3);
+    if w < -radius {
+        return false;
+    }
+    let slack = w + radius * 2.5;
+    c(0).abs() <= slack && c(1).abs() <= slack
+}
+
+/// First point where a ray meets a height field (march from the eye in
+/// steps growing with distance), or None within `max_t`.
+pub fn march_heightfield(
+    eye: [f64; 3],
+    dir: [f64; 3],
+    max_t: f64,
+    height: impl Fn(f64, f64) -> Option<f64>,
+) -> Option<[f64; 3]> {
+    let mut t = 0.0;
+    let mut prev = t;
+    while t <= max_t {
+        let p = [eye[0] + t * dir[0], eye[1] + t * dir[1], eye[2] + t * dir[2]];
+        if let Some(h) = height(p[0], p[1]) {
+            if p[2] <= h {
+                // Refine between the last two samples.
+                let (mut a, mut b) = (prev, t);
+                for _ in 0..12 {
+                    let m = (a + b) / 2.0;
+                    let q = [eye[0] + m * dir[0], eye[1] + m * dir[1], eye[2] + m * dir[2]];
+                    if height(q[0], q[1]).is_some_and(|h| q[2] <= h) {
+                        b = m;
+                    } else {
+                        a = m;
+                    }
+                }
+                return Some([eye[0] + b * dir[0], eye[1] + b * dir[1], eye[2] + b * dir[2]]);
+            }
+        }
+        prev = t;
+        t += 0.02 + t * 0.01;
+    }
+    None
+}
+
+#[cfg(test)]
+mod look_tests {
+    use super::*;
+
+    #[test]
+    fn the_look_camera_projects_its_forward_to_the_screen_center() {
+        let cam = LookCamera { eye: [1.0, 2.0, 3.0], fwd: [0.6, 0.8, 0.0], viewport: [800.0, 600.0], fov_y: WALK_FOV_Y, near: 0.05, far: 500.0 };
+        let vp = cam.view_proj();
+        let p = [1.0 + 6.0, 2.0 + 8.0, 3.0];
+        let c = |row: usize| vp[row] as f64 * p[0] + vp[4 + row] as f64 * p[1] + vp[8 + row] as f64 * p[2] + vp[12 + row] as f64;
+        assert!((c(0) / c(3)).abs() < 1e-5 && (c(1) / c(3)).abs() < 1e-5);
+        let z = c(2) / c(3);
+        assert!(z > 0.0 && z < 1.0);
+        let (_, d) = cam.screen_ray(400.0, 300.0);
+        assert!((d[0] - 0.6).abs() < 1e-9 && (d[1] - 0.8).abs() < 1e-9);
+        assert!(in_view(&vp, p, 0.1));
+        assert!(!in_view(&vp, [1.0 - 6.0, 2.0 - 8.0, 3.0], 0.1), "behind the eye");
+    }
+
+    #[test]
+    fn marching_finds_the_ground() {
+        let hit = march_heightfield([0.0, 0.0, 5.0], normalize([1.0, 0.0, -1.0]), 50.0, |_, _| Some(1.0)).unwrap();
+        assert!((hit[2] - 1.0).abs() < 0.01 && (hit[0] - 4.0).abs() < 0.02);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

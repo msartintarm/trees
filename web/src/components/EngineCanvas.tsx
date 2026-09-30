@@ -17,11 +17,14 @@ import {
   wheelZoomFactor,
   MAX_DPR,
 } from "../lib/camera.ts";
-import { cloudsText, deathsText, newestCloudEvent, statsText } from "../lib/hud.ts";
+import { cloudsText, deathsText, newestCloudEvent, statsText, walkText } from "../lib/hud.ts";
 import {
   BIOMES,
   GRASS_NAMES,
+  KEY_BITS,
+  LIGHT_MODES,
   SPECIES_NAMES,
+  WALK_ACTIONS,
   type Brush,
   type GrassKind,
   type StatsSnapshot,
@@ -48,6 +51,35 @@ const SPEEDS = [0.05, 0.5, 1, 2, 8, 32];
 /** A click either paints with a brush or inspects the tile. */
 type Tool = Brush | "inspect";
 const DEFAULT_SEED = 7;
+/** Mouse-look sensitivity, radians per pixel. */
+const LOOK_SPEED = 0.0024;
+
+/** Movement key bits held for a keyboard code. */
+function keyBit(code: string): number {
+  switch (code) {
+    case "KeyW":
+    case "ArrowUp":
+      return KEY_BITS.forward;
+    case "KeyS":
+    case "ArrowDown":
+      return KEY_BITS.back;
+    case "KeyA":
+    case "ArrowLeft":
+      return KEY_BITS.left;
+    case "KeyD":
+    case "ArrowRight":
+      return KEY_BITS.right;
+    case "ShiftLeft":
+    case "ShiftRight":
+      return KEY_BITS.sprint;
+    case "Space":
+      return KEY_BITS.jump;
+    case "KeyR":
+      return KEY_BITS.rest;
+    default:
+      return 0;
+  }
+}
 
 /** The Whittaker chart: sampled tiles plotted by site temperature (x) and
  * water (y), colored by biome. */
@@ -83,6 +115,21 @@ export default function EngineCanvas() {
   const chartRef = useRef<HTMLCanvasElement | null>(null);
   const [biomeShares, setBiomeShares] = useState<number[]>([]);
   const snapshotRef = useRef<StatsSnapshot | null>(null);
+  const walkHudRef = useRef<HTMLDivElement | null>(null);
+  const targetRef = useRef<HTMLDivElement | null>(null);
+  const messageRef = useRef<HTMLDivElement | null>(null);
+  const [walking, setWalking] = useState(false);
+  const walkingRef = useRef(false);
+  walkingRef.current = walking;
+  const [action, setAction] = useState(0);
+  const actionRef = useRef(0);
+  actionRef.current = action;
+  const [hexColumns, setHexColumns] = useState(false);
+  const [landforms, setLandforms] = useState(true);
+  const [lightMode, setLightMode] = useState(0);
+  const [bloom, setBloom] = useState(true);
+  const [detail, setDetail] = useState(true);
+  const [hexOverlay, setHexOverlay] = useState(false);
 
   const [error, setError] = useState<string | null>(null);
   const [backend, setBackend] = useState<string>("");
@@ -143,6 +190,13 @@ export default function EngineCanvas() {
             tickerRef.current.textContent = "";
           }
           setPlaying((p) => (p === f.snapshot.playing ? p : f.snapshot.playing));
+          const w = f.snapshot.walk;
+          setWalking((was) => (was === (w !== null) ? was : w !== null));
+          if (w) {
+            if (walkHudRef.current) walkHudRef.current.textContent = walkText(w);
+            if (targetRef.current) targetRef.current.textContent = w.target ? `▸ ${w.target}` : "";
+            if (messageRef.current) messageRef.current.textContent = w.message;
+          }
         },
         onFatal: (message) => setError(message),
         onInspect: (text) => setInspectText(text || null),
@@ -180,6 +234,21 @@ export default function EngineCanvas() {
     };
 
     const onPointerDown = (e: PointerEvent) => {
+      if (walkingRef.current) {
+        // Walking: the first click captures the mouse for looking; then
+        // left acts and right inspects.
+        if (document.pointerLockElement !== canvas) {
+          canvas.requestPointerLock?.();
+          return;
+        }
+        if (e.button === 0) {
+          const a = WALK_ACTIONS[actionRef.current];
+          session.applyControl({ type: "act", action: a.code, species: speciesRef.current, grass: grassRef.current });
+        } else if (e.button === 2) {
+          session.applyControl({ type: "inspectTarget" });
+        }
+        return;
+      }
       if (active) return;
       canvas.setPointerCapture(e.pointerId);
       active = {
@@ -195,6 +264,12 @@ export default function EngineCanvas() {
     };
 
     const onPointerMove = (e: PointerEvent) => {
+      if (walkingRef.current) {
+        if (document.pointerLockElement === canvas && (e.movementX || e.movementY)) {
+          session.applyControl({ type: "look", dyaw: -e.movementX * LOOK_SPEED, dpitch: -e.movementY * LOOK_SPEED });
+        }
+        return;
+      }
       if (!active || e.pointerId !== active.id) return;
       const dx = e.clientX - active.lastX;
       const dy = e.clientY - active.lastY;
@@ -234,6 +309,7 @@ export default function EngineCanvas() {
 
     const onWheel = (e: WheelEvent) => {
       e.preventDefault();
+      if (walkingRef.current) return;
       session.applyControl({ type: "zoom", factor: wheelZoomFactor(e.deltaY) });
     };
 
@@ -246,7 +322,63 @@ export default function EngineCanvas() {
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onContextMenu);
 
+    // ---- walking keys ----
+    let held = 0;
+    const onKey = (down: boolean) => (e: KeyboardEvent) => {
+      if (!walkingRef.current) return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === "INPUT" || target.tagName === "SELECT")) return;
+      if (down && !e.repeat) {
+        const n = Number(e.key);
+        if (n >= 1 && n <= WALK_ACTIONS.length) {
+          setAction(n - 1);
+          return;
+        }
+        if (e.code === "KeyE") {
+          const a = WALK_ACTIONS[actionRef.current];
+          session.applyControl({ type: "act", action: a.code, species: speciesRef.current, grass: grassRef.current });
+          return;
+        }
+        if (e.code === "KeyF") {
+          session.applyControl({ type: "inspectTarget" });
+          return;
+        }
+        if (e.code === "KeyV") {
+          session.applyControl({ type: "thirdPerson" });
+          return;
+        }
+        if (e.code === "KeyQ") {
+          document.exitPointerLock?.();
+          session.applyControl({ type: "exitWalk" });
+          return;
+        }
+      }
+      const bit = keyBit(e.code);
+      if (!bit) return;
+      e.preventDefault();
+      const next = down ? held | bit : held & ~bit;
+      if (next !== held) {
+        held = next;
+        session.applyControl({ type: "keys", bits: held });
+      }
+    };
+    const onKeyDown = onKey(true);
+    const onKeyUp = onKey(false);
+    // Losing focus drops every held key (no runaway walking).
+    const onBlur = () => {
+      if (held !== 0) {
+        held = 0;
+        session.applyControl({ type: "keys", bits: 0 });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+
     return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
       ro.disconnect();
       canvas.removeEventListener("pointerdown", onPointerDown);
       canvas.removeEventListener("pointermove", onPointerMove);
@@ -296,6 +428,26 @@ export default function EngineCanvas() {
 
   const activePreset = matchingPreset(params);
 
+  const enterWalk = () => {
+    const c = canvasRef.current;
+    const w = c?.width ?? 0;
+    const h = c?.height ?? 0;
+    send({ type: "walk", bx: w / 2, by: h / 2 });
+    setWalking(true);
+    c?.requestPointerLock?.();
+  };
+
+  const exitWalk = () => {
+    document.exitPointerLock?.();
+    send({ type: "exitWalk" });
+    setWalking(false);
+  };
+
+  const toggle = (on: boolean, set: (v: boolean) => void, control: (on: boolean) => Parameters<Session["applyControl"]>[0]) => {
+    set(!on);
+    send(control(!on));
+  };
+
   return (
     <div className={styles.wrap}>
       <canvas ref={canvasRef} className={styles.canvas} />
@@ -305,6 +457,77 @@ export default function EngineCanvas() {
           <button onClick={togglePlay}>{playing ? "⏸ Pause" : "▶ Play"}</button>
           <button onClick={() => send({ type: "step" })}>Step</button>
           <button onClick={() => send({ type: "resetCamera" })}>Reset view</button>
+        </div>
+        <div className={styles.row}>
+          {walking ? (
+            <button className={styles.active} onClick={exitWalk} title="back to the overview (Q)">
+              🦅 Overview
+            </button>
+          ) : (
+            <button onClick={enterWalk} title="walk the world as a long-lived wanderer: time flows as you move">
+              🚶 Walk
+            </button>
+          )}
+        </div>
+        <div className={styles.row}>
+          <span className={styles.label}>Ground</span>
+          <button
+            className={hexColumns ? styles.active : ""}
+            title="hex columns (stepped, platformer terraces) or a smooth surface"
+            onClick={() => toggle(hexColumns, setHexColumns, (on) => ({ type: "hexColumns", on }))}
+          >
+            ⬢ Columns
+          </button>
+          <button
+            className={landforms ? styles.active : ""}
+            title="exaggerated biome landforms: dunes, mesas, jagged peaks, tundra hummocks"
+            onClick={() => toggle(landforms, setLandforms, (on) => ({ type: "landforms", on }))}
+          >
+            ⛰ Landforms
+          </button>
+          <button
+            className={hexOverlay ? styles.active : ""}
+            title="draw the hex grid on the ground"
+            onClick={() => toggle(hexOverlay, setHexOverlay, (on) => ({ type: "hexOverlay", on }))}
+          >
+            ⬡ Grid
+          </button>
+        </div>
+        <div className={styles.row}>
+          <span className={styles.label}>Light</span>
+          {LIGHT_MODES.map((name, k) => (
+            <button
+              key={name}
+              className={k === lightMode ? styles.active : ""}
+              title={k === 0 ? "follow the time of day (walking); the sun smears into its daily arc as time flies" : undefined}
+              onClick={() => {
+                setLightMode(k);
+                send({ type: "lightMode", mode: k });
+              }}
+            >
+              {name}
+            </button>
+          ))}
+        </div>
+        <div className={styles.row}>
+          <span className={styles.label}>Quality</span>
+          <button
+            className={bloom ? styles.active : ""}
+            title="bloom: bright light glows (sun, glints, fireflies)"
+            onClick={() => toggle(bloom, setBloom, (on) => ({ type: "bloom", on }))}
+          >
+            ✨ Bloom
+          </button>
+          <button
+            className={detail ? styles.active : ""}
+            title="close-up parallax relief on rock, sand and tundra"
+            onClick={() => {
+              setDetail(!detail);
+              send({ type: "detail", value: detail ? 0 : 1 });
+            }}
+          >
+            🔎 Detail
+          </button>
         </div>
         <div className={styles.row}>
           <span className={styles.label}>Speed</span>
@@ -449,6 +672,32 @@ export default function EngineCanvas() {
           drag: orbit · shift/right-drag: pan · wheel: zoom
         </div>
       </div>
+      {walking && (
+        <>
+          <div className={styles.crosshair} />
+          <div className={styles.walkHud}>
+            <div ref={walkHudRef} />
+            <div ref={targetRef} className={styles.weather} />
+            <div ref={messageRef} className={styles.ticker} />
+            <div className={styles.actions}>
+              {WALK_ACTIONS.map((a, k) => (
+                <button
+                  key={a.code}
+                  className={k === action ? styles.active : ""}
+                  title={a.hint}
+                  onClick={() => setAction(k)}
+                >
+                  <kbd>{a.key}</kbd> {a.label}
+                </button>
+              ))}
+            </div>
+            <div className={styles.hint}>
+              click to look · WASD move · shift sprint · space jump · hold R rest (years pass) · click/E act ·
+              right-click/F inspect · V camera · Q overview — standing still, time crawls; moving, it flies
+            </div>
+          </div>
+        </>
+      )}
       <div className={styles.hud}>
         <div ref={hudRef}>loading…</div>
         <div ref={weatherRef} className={styles.weather} />
