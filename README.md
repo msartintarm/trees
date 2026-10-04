@@ -79,6 +79,10 @@ engine/                 Rust crate → wasm (cdylib + rlib)
     clock.rs            fixed-dt play/pause/speed clock
     hex.rs              axial hex math, disks, picking, world bounds
     world.rs            cell states + the per-tick ecology rules
+    terrain.rs          relief, rivers, the designed map (spine, rain
+                        shadow) and its landmarks
+    places.rs           named regions and landmarks
+    fauna.rs            grazing herds and wolf packs
   src/render/           pure render math + WGSL + wasm-only GPU
     camera.rs           orbit + walking cameras, picking, culling test
     geometry.rs         baked meshes: trees (+ far LOD), grass, clouds, props
@@ -196,6 +200,11 @@ npm run dev                    # builds the wasm first (cached by content hash)
 
 Open http://localhost:3000 — click to plant, drag to orbit, shift/right-drag
 to pan, wheel to zoom.
+
+**🎲 Auto-plant** sets down a random plant — any tree species or grass kind
+in the current pool — on a random open tile at a fixed rate (plants per
+tick, set under Parameters; fractions plant on a schedule, 0.25 = every
+fourth tick). It's off by default, so the world still starts empty.
 
 **🚶 Walk** steps down into the world as a long-lived wanderer: click to
 capture the mouse, WASD to move, shift to sprint, space to jump, hold R to

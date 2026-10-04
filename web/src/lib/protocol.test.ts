@@ -27,6 +27,7 @@ test("every control variant passes the guard", () => {
     { type: "look", dyaw: 0.01, dpitch: -0.02 },
     { type: "act", action: 1, species: 1, grass: 0 },
     { type: "inspectTarget" },
+    { type: "clearInspect" },
     { type: "thirdPerson" },
     { type: "hexColumns", on: true },
     { type: "landforms", on: false },

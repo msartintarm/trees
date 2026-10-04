@@ -46,6 +46,11 @@ export type Sim = {
     seasons: number,
     cloudDynamics: number,
     biomes: number,
+    patterns: number,
+    mapDesign: number,
+    events: number,
+    fauna: number,
+    autoPlant: number,
     seedTreeP: number,
     seedGrassP: number,
     width: number,
@@ -105,9 +110,17 @@ export type Sim = {
   toggle_third_person(): void;
   act(action: number, species: number, grass: number): string;
   inspect_target(): string;
+  clear_selection(): void;
+  selected_screen(): Float32Array;
   target_label(): string;
   walk_status(): Float32Array;
   walk_message(): string;
+  walk_place(): string;
+  // Places and events.
+  labels(): Float32Array;
+  label_names(): string;
+  biome_events(): Uint32Array;
+  biome_event_places(): string;
 };
 
 export type Renderer = {

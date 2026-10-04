@@ -84,17 +84,71 @@
 }
 
 .hud {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  padding: 6px 12px;
+  padding: 8px 12px;
   background: rgba(12, 17, 24, 0.82);
   border: 1px solid rgba(255, 255, 255, 0.12);
   border-radius: 8px;
   color: #e6edf3;
-  font: 13px/1.5 ui-monospace, monospace;
+  font: 12px/1.55 ui-monospace, monospace;
   user-select: none;
-  white-space: nowrap;
+}
+
+/* The stats, one item per line. */
+.stats {
+  white-space: pre-line;
+}
+
+/* The right-hand column: stats, then the biome legend and the tile
+   inspector when open — stacked, scrolling if they outgrow the screen. */
+.side {
+  position: absolute;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+  width: min(300px, calc(100% - 24px));
+  max-height: calc(100% - 24px);
+  overflow-y: auto;
+}
+
+/* Collapsible panel sections. */
+.section {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 6px;
+}
+
+.section summary {
+  cursor: pointer;
+  font-weight: 600;
+  opacity: 0.85;
+  list-style: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.section summary::-webkit-details-marker {
+  display: none;
+}
+
+.section summary::after {
+  content: "▸";
+  margin-left: auto;
+  opacity: 0.6;
+  transition: transform 0.15s;
+}
+
+.section[open] summary::after {
+  transform: rotate(90deg);
+}
+
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
 }
 
 .hint {
@@ -174,10 +228,13 @@
 }
 
 .inspect {
+  /* Pinned beside its tile (placeInspector sets the transform). */
   position: absolute;
-  right: 12px;
-  top: 12px;
-  max-width: min(380px, calc(100% - 24px));
+  left: 0;
+  top: 0;
+  width: min(320px, calc(100% - 16px));
+  z-index: 3;
+  box-shadow: 0 4px 18px rgba(0, 0, 0, 0.45);
   background: rgba(16, 22, 28, 0.9);
   color: #e8eef2;
   font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -217,9 +274,6 @@
 }
 
 .biomes {
-  position: absolute;
-  right: 12px;
-  bottom: 110px;
   background: rgba(16, 22, 28, 0.9);
   color: #e8eef2;
   font: 12px/1.5 system-ui, sans-serif;
@@ -268,10 +322,10 @@
 
 .walkHud {
   position: absolute;
-  /* Right of the control panel, above the stats line. */
-  left: 340px;
-  right: 16px;
-  bottom: calc(96px + env(safe-area-inset-bottom, 0px));
+  /* Between the control panel and the side column, along the bottom. */
+  left: 300px;
+  right: 324px;
+  bottom: calc(16px + env(safe-area-inset-bottom, 0px));
   margin: 0 auto;
   max-width: 760px;
   padding: 8px 12px;
@@ -295,9 +349,89 @@
   opacity: 0.7;
 }
 
-@media (max-width: 700px) {
+@media (max-width: 900px) {
   .walkHud {
     left: 16px;
-    bottom: calc(150px + env(safe-area-inset-bottom, 0px));
+    right: 16px;
   }
+}
+
+/* Narrow screens: the side column moves below the panel's corner and
+   shrinks, so both stay usable. */
+@media (max-width: 700px) {
+  .side {
+    top: auto;
+    bottom: 12px;
+    width: calc(100% - 24px);
+    max-height: 40%;
+  }
+  .panel {
+    max-height: 55%;
+  }
+}
+
+/* Place names over the map: regions in spaced small caps, landmarks in
+   italic, both with a soft halo so they read on any ground. */
+.labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.labels span {
+  position: absolute;
+  left: 0;
+  top: 0;
+  white-space: nowrap;
+  color: #f4efe2;
+  text-shadow: 0 0 3px rgba(0, 0, 0, 0.85), 0 1px 2px rgba(0, 0, 0, 0.7);
+  will-change: transform, opacity;
+}
+
+.labels span:global(.region) {
+  font: 600 13px/1 Georgia, "Times New Roman", serif;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+}
+
+.labels span:global(.landmark) {
+  font: italic 13px/1 Georgia, "Times New Roman", serif;
+  color: #fff6d6;
+}
+
+.place {
+  font: italic 14px/1.4 Georgia, "Times New Roman", serif;
+  color: #fff6d6;
+}
+
+/* Recent cloud transitions: a row of emoji, each with its tooltip. */
+.sky {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 2px;
+  font-size: 14px;
+}
+
+.sky:empty {
+  display: none;
+}
+
+.sky span {
+  cursor: help;
+}
+
+/* Instant tooltip for the weather icons. */
+.tip {
+  position: fixed;
+  z-index: 10;
+  max-width: 260px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  background: rgba(10, 14, 18, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #f0f4f7;
+  font: 12px/1.35 system-ui, sans-serif;
+  pointer-events: none;
 }

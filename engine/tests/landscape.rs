@@ -38,8 +38,21 @@ fn simulate(p: Params) -> Run {
     Run { world, floods, gamma: g / n, alpha: a / n }
 }
 
+/// The P25–P28 landscape these bands were measured on: the later layers
+/// (patterns, the designed map, events, fauna) have their own suite in
+/// tests/patterns.rs.
 fn base() -> Params {
-    Params { width: 128, height: 128, seed_tree_p: 0.02, seed_grass_p: 0.10, ..Params::default() }
+    Params {
+        width: 128,
+        height: 128,
+        seed_tree_p: 0.02,
+        seed_grass_p: 0.10,
+        patterns: 0.0,
+        map_design: 0.0,
+        events: 0.0,
+        fauna: 0.0,
+        ..Params::default()
+    }
 }
 
 fn on() -> &'static Run {

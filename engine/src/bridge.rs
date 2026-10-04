@@ -159,6 +159,12 @@ pub struct Simulation {
     walk: Option<Walk>,
     /// This frame's uniform block (see `frame_uniforms`).
     uniforms: Vec<f32>,
+    /// This frame's on-screen labels (see `labels`).
+    labels: Vec<f32>,
+    /// The tile the inspector is showing (outlined on the ground), and
+    /// where it is on screen this frame.
+    selected: Option<usize>,
+    selected_screen: Option<[f32; 2]>,
     last_frame_ms: f64,
 }
 
@@ -202,6 +208,9 @@ impl Simulation {
             hex_overlay: false,
             walk: None,
             uniforms: Vec::new(),
+            labels: Vec::new(),
+            selected: None,
+            selected_screen: None,
             last_frame_ms: 0.0,
         }
     }
@@ -225,6 +234,7 @@ impl Simulation {
         }
         self.seed = seed;
         self.walk = None;
+        self.selected = None;
         self.refresh_surface(true);
     }
 
@@ -325,13 +335,17 @@ impl Simulation {
         self.seed
     }
 
-    /// `[bare, grass, trees, burning, storms, infested, houses]`.
+    /// `[bare, grass, trees, burning, storms, infested, houses, grazers,
+    /// wolves]`.
     pub fn counts(&self) -> Vec<u32> {
         let mut c = self.world.counts().to_vec();
         c.push(self.world.burning_count());
         c.push(self.world.storms().iter().filter(|s| s.kind.traits().rains).count() as u32);
         c.push(self.world.infested_count());
         c.push((0..self.world.grid().cells()).filter(|&i| self.world.is_built(i)).count() as u32);
+        let f = self.world.fauna();
+        c.push(f.herds.iter().map(|h| h.size).sum::<f64>().round() as u32);
+        c.push(f.packs.iter().map(|p| p.size).sum::<f64>().round() as u32);
         c
     }
 
@@ -369,6 +383,11 @@ impl Simulation {
         seasons: f64,
         cloud_dynamics: f64,
         biomes: f64,
+        patterns: f64,
+        map_design: f64,
+        events: f64,
+        fauna: f64,
+        auto_plant: f64,
         seed_tree_p: f64,
         seed_grass_p: f64,
         width: u32,
@@ -405,6 +424,11 @@ impl Simulation {
             seasons,
             cloud_dynamics,
             biomes,
+            patterns,
+            map_design,
+            events,
+            fauna,
+            auto_plant,
             seed_tree_p,
             seed_grass_p,
             width,
@@ -736,8 +760,14 @@ impl Simulation {
     }
 
     /// The inspector report for the tile under the crosshair.
-    pub fn inspect_target(&self) -> String {
-        self.target_tile().map_or(String::new(), |i| self.world.inspect(i, self.clock.tick()))
+    pub fn inspect_target(&mut self) -> String {
+        self.selected = self.target_tile();
+        self.selected.map_or(String::new(), |i| self.world.inspect(i, self.clock.tick()))
+    }
+
+    /// Stop outlining the inspected tile (the inspector was closed).
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
     }
 
     /// What the crosshair rests on, one line ("" when nothing in reach).
@@ -908,12 +938,140 @@ impl Simulation {
         u.extend([basis[1][0] as f32, basis[1][1] as f32, basis[1][2] as f32, walking as u8 as f32]);
         u.extend([basis[2][0] as f32, basis[2][1] as f32, basis[2][2] as f32, season_phase]);
         u.extend([grade[0], grade[1], grade[2], 1.0]);
+        match self.selected.filter(|&i| i < self.world.grid().cells()) {
+            Some(i) => {
+                let (x, y) = self.world.grid().center(i);
+                u.extend([x as f32, y as f32, 1.0, 0.0]);
+            }
+            None => u.extend([0.0, 0.0, 0.0, 0.0]),
+        }
         // Post: bloom strength, exposure (a little lift at night so the
         // moonlit world stays playable), vignette, bright threshold.
         let exposure = 1.0 + 0.35 * (1.0 - sun.daylight as f32);
         u.extend([0.55, exposure, if walking { 0.28 } else { 0.12 }, 0.95]);
         self.uniforms = u;
         self.last_frame_ms = now;
+        self.labels = self.project_labels(&vp, eye, walking);
+        self.selected_screen = self.selected.and_then(|i| self.project_tile(&vp, i));
+    }
+
+    /// Where a tile's center appears on screen (backing pixels), if in
+    /// front of the camera.
+    fn project_tile(&self, vp: &[f32; 16], i: usize) -> Option<[f32; 2]> {
+        let (x, y) = self.world.grid().center(i);
+        let z = self.surface.height_at(x, y);
+        let c = |row: usize| vp[row] as f64 * x + vp[4 + row] as f64 * y + vp[8 + row] as f64 * z + vp[12 + row] as f64;
+        let w = c(3);
+        if w <= 0.05 {
+            return None;
+        }
+        let [vw, vh] = self.camera.viewport;
+        Some([((c(0) / w + 1.0) / 2.0 * vw) as f32, ((1.0 - c(1) / w) / 2.0 * vh) as f32])
+    }
+
+    /// The inspected tile's screen position this frame: [x, y] in backing
+    /// pixels, or empty when nothing is selected or it's behind the camera.
+    pub fn selected_screen(&self) -> Vec<f32> {
+        self.selected_screen.map_or(Vec::new(), |p| p.to_vec())
+    }
+
+    /// Region and landmark labels projected to the screen: regions read in
+    /// the overview from afar, landmarks wherever they are near enough.
+    fn project_labels(&self, vp: &[f32; 16], eye: [f64; 3], walking: bool) -> Vec<f32> {
+        let grid = self.world.grid();
+        let [vw, vh] = self.camera.viewport;
+        let mut out = Vec::new();
+        let mut put = |tile: usize, kind: f32, id: usize, near: f64, far: f64| {
+            let (x, y) = grid.center(tile);
+            let z = self.surface.height_at(x, y) + if kind == 0.0 { 6.0 } else { 3.0 };
+            let c = |row: usize| vp[row] as f64 * x + vp[4 + row] as f64 * y + vp[8 + row] as f64 * z + vp[12 + row] as f64;
+            let w = c(3);
+            if w <= 0.05 {
+                return;
+            }
+            let (nx, ny) = (c(0) / w, c(1) / w);
+            if nx.abs() > 1.05 || ny.abs() > 1.05 {
+                return;
+            }
+            let d = ((x - eye[0]).powi(2) + (y - eye[1]).powi(2) + (z - eye[2]).powi(2)).sqrt();
+            // Fade in from `near` and out beyond `far`.
+            let alpha = ((d - near) / (near * 0.5 + 1.0)).clamp(0.0, 1.0) * (1.0 - ((d - far) / (far * 0.3)).clamp(0.0, 1.0));
+            if alpha <= 0.02 {
+                return;
+            }
+            out.extend([((nx + 1.0) / 2.0 * vw) as f32, ((1.0 - ny) / 2.0 * vh) as f32, alpha as f32, kind, id as f32]);
+        };
+        // Landmarks first, then regions largest first: the page keeps the
+        // earlier label where two would overlap.
+        let regions = self.world.regions();
+        for (k, (_, tile, _)) in self.world.landmarks().iter().enumerate() {
+            let far = if walking { 160.0 } else { 700.0 };
+            put(*tile, 1.0, regions.len() + k, 4.0, far);
+        }
+        if !walking {
+            let mut order: Vec<usize> = (0..regions.len()).collect();
+            order.sort_by_key(|&k| std::cmp::Reverse(regions[k].tiles));
+            for k in order {
+                put(regions[k].anchor, 0.0, k, 60.0, 1400.0);
+            }
+        }
+        out
+    }
+
+    /// Labels for this frame: flat [screen x, screen y (backing pixels),
+    /// alpha, kind (0 region, 1 landmark), name index] per label.
+    pub fn labels(&self) -> Vec<f32> {
+        self.labels.clone()
+    }
+
+    /// Every label name, newline-separated, indexed by `labels`' name
+    /// index (regions, then landmarks). Fixed for a world.
+    pub fn label_names(&self) -> String {
+        let mut names: Vec<String> = self.world.regions().iter().map(|r| r.name.clone()).collect();
+        names.extend(self.world.landmarks().into_iter().map(|(_, _, n)| n));
+        names.join("\n")
+    }
+
+    /// Landscape events so far: [superblooms, wildfires, beetle waves,
+    /// floods].
+    pub fn biome_events(&self) -> Vec<u32> {
+        self.world.biome_events().to_vec()
+    }
+
+    /// Where the latest event of each kind happened (region names,
+    /// newline-separated; "" when unnamed or none yet).
+    pub fn biome_event_places(&self) -> String {
+        use crate::sim::world::BiomeEvent::*;
+        [Superbloom, Wildfire, BeetleWave, Flood]
+            .iter()
+            .map(|&e| {
+                self.world
+                    .biome_event_at(e)
+                    .and_then(|(i, _)| self.world.region_name(i))
+                    .unwrap_or("")
+                    .to_string()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// Where the wanderer is: the region, and a landmark within sight.
+    pub fn walk_place(&self) -> String {
+        let Some(w) = &self.walk else { return String::new() };
+        let grid = self.world.grid();
+        let Some(i) = grid.pick(w.player.pos[0], w.player.pos[1]) else { return String::new() };
+        let mut parts = Vec::new();
+        if let Some(r) = self.world.region_name(i) {
+            parts.push(r.to_string());
+        }
+        let (q, r) = grid.index_to_axial(i);
+        for (_, tile, name) in self.world.landmarks() {
+            let (lq, lr) = grid.index_to_axial(tile);
+            if crate::sim::hex::distance(q, r, lq, lr) <= 8 {
+                parts.push(format!("near {name}"));
+            }
+        }
+        parts.join(" · ")
     }
 
     fn sun_state(&self, season_phase: f64, season_amp: f64) -> SunState {
@@ -1058,8 +1216,9 @@ impl Simulation {
     }
 
     /// The tile inspector for a screen point ("" on a miss).
-    pub fn inspect_at(&self, bx: f32, by: f32) -> String {
+    pub fn inspect_at(&mut self, bx: f32, by: f32) -> String {
         let index = self.pick_tile(bx, by);
+        self.selected = (index >= 0).then_some(index as usize);
         if index < 0 {
             return String::new();
         }

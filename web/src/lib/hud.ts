@@ -1,7 +1,7 @@
 // Pure snapshot→string formatting for the HUD, kept out of the component so
 // the exact readout is unit-tested.
 
-import { CLOUD_EVENTS, DEATH_CAUSES, type StatsSnapshot, type WalkSnapshot } from "./protocol.ts";
+import { BIOME_EVENTS, CLOUD_EVENTS, DEATH_CAUSES, type StatsSnapshot, type WalkSnapshot } from "./protocol.ts";
 
 function group(n: number): string {
   return Math.floor(n).toLocaleString("en-US");
@@ -69,15 +69,35 @@ export function deathsText(s: StatsSnapshot): string {
   return `☠ ${top.map((d) => `${d.cause} ${Math.round(d.n)}`).join(" · ")}`;
 }
 
+/** The readout as stacked lines (the side panel): map and time, the
+ * populations, diversity, climate, then one line per active condition. */
+export function statsLines(s: StatsSnapshot): string[] {
+  const pct = (v: number) => `${Math.round(v * 100)}%`;
+  const lines = [
+    `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · ${speedLabel(s)}`,
+    `🌳 ${group(s.trees)} trees · 🌾 ${group(s.grass)} grass · ${group(s.bare)} bare`,
+    diversityLabel(s),
+    `☀ ${pct(s.sun)} 💧 ${pct(s.moisture)}${s.mast ? " 🌰 mast year" : ""}`,
+  ];
+  if (s.storms > 0) lines.push(`⛈ ${group(s.storms)} storm${s.storms === 1 ? "" : "s"}`);
+  if (s.flooding) lines.push("🌊 flood");
+  if (s.burning > 0) lines.push(`🔥 ${group(s.burning)} burning`);
+  if (s.infested > 0) lines.push(`🐛 ${group(s.infested)} infested`);
+  if (s.grazers > 0) lines.push(`🦬 ${group(s.grazers)} grazers${s.wolves > 0 ? ` · 🐺 ${group(s.wolves)} wolves` : ""}`);
+  if (s.houses > 0) lines.push(`🏠 ${group(s.houses)} house${s.houses === 1 ? "" : "s"}`);
+  return lines;
+}
+
 export function statsText(s: StatsSnapshot): string {
   const fire = s.burning > 0 ? ` · 🔥 ${group(s.burning)}` : "";
   const storm = s.storms > 0 ? ` · ⛈ ${group(s.storms)}` : "";
   const pests = s.infested > 0 ? ` · 🐛 ${group(s.infested)}` : "";
   const flood = s.flooding ? " · 🌊 flood" : "";
   const houses = s.houses > 0 ? ` · 🏠 ${group(s.houses)}` : "";
+  const animals = s.grazers > 0 ? ` · 🦬 ${group(s.grazers)}${s.wolves > 0 ? ` 🐺 ${group(s.wolves)}` : ""}` : "";
   const pct = (v: number) => `${Math.round(v * 100)}%`;
   const climate = ` · ☀ ${pct(s.sun)} 💧 ${pct(s.moisture)}${s.mast ? " 🌰" : ""}`;
-  return `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · trees ${group(s.trees)} · grass ${group(s.grass)} · bare ${group(s.bare)} · ${diversityLabel(s)}${climate}${storm}${flood}${fire}${pests}${houses} · ${speedLabel(s)}`;
+  return `${s.gridWidth}×${s.gridHeight} · tick ${group(s.tick)} · trees ${group(s.trees)} · grass ${group(s.grass)} · bare ${group(s.bare)} · ${diversityLabel(s)}${climate}${storm}${flood}${fire}${pests}${animals}${houses} · ${speedLabel(s)}`;
 }
 
 const SEASONS = ["spring", "summer", "autumn", "winter"];
@@ -125,4 +145,34 @@ export function walkText(w: WalkSnapshot): string {
   ];
   if (w.wading) parts.push("🌊 wading");
   return parts.join(" · ");
+}
+
+/** The newest landscape event between two snapshots' tallies, named by the
+ * region it happened in ("the land" when unnamed), or null. */
+export function newestBiomeEvent(prev: number[] | null, next: number[], places: string[]): string | null {
+  if (!prev) return null;
+  let found: string | null = null;
+  next.forEach((n, k) => {
+    if (n > (prev[k] ?? 0) && BIOME_EVENTS[k]) {
+      found = BIOME_EVENTS[k].replace("{place}", places[k] || "the land");
+    }
+  });
+  return found;
+}
+
+/** Every cloud transition since the last snapshot (not just the newest),
+ * as an emoji icon with its full description for a tooltip. Evaporation
+ * is too routine to show. */
+export function cloudEventIcons(prev: number[] | null, next: number[]): { icon: string; text: string }[] {
+  if (!prev) return [];
+  const out: { icon: string; text: string }[] = [];
+  next.forEach((n, k) => {
+    const text = CLOUD_EVENTS[k];
+    if (k === 5 || !text) return;
+    for (let c = prev[k] ?? 0; c < n && out.length < 12; c++) {
+      const space = text.indexOf(" ");
+      out.push({ icon: space > 0 ? text.slice(0, space) : text, text: text.slice(space + 1) });
+    }
+  });
+  return out;
 }

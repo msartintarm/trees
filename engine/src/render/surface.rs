@@ -27,7 +27,7 @@ pub const CHUNK: i32 = 32;
 const DUNE_AMP: f64 = 1.1;
 /// Dune wavelength across the ridges.
 const DUNE_WAVE: f64 = 7.5;
-const TERRACE_STEP: f64 = 1.6;
+const TERRACE_STEP: f64 = 3.2;
 const PEAK_AMP: f64 = 5.0;
 const HUMMOCK_AMP: f64 = 0.35;
 
@@ -93,7 +93,7 @@ fn terrace(h: f64, step: f64) -> f64 {
     let k = h / step;
     let base = k.floor();
     let f = k - base;
-    let riser = ((f - 0.72) / 0.28).clamp(0.0, 1.0);
+    let riser = ((f - 0.55) / 0.45).clamp(0.0, 1.0);
     (base + riser * riser * (3.0 - 2.0 * riser)) * step
 }
 
@@ -180,7 +180,7 @@ impl Surface {
             let dry = (desert + savanna).min(1.0);
             let caprock = ((noise(x / 55.0, y / 55.0, 21) - 0.45) / 0.2).clamp(0.0, 1.0);
             if dry > 0.2 && caprock > 0.0 && base > 1.0 {
-                let t = dry * caprock;
+                let t = 0.6 * dry * caprock;
                 h = h + (terrace(h, TERRACE_STEP) + 0.6 * TERRACE_STEP - h) * t;
                 r = r.max(t);
             }

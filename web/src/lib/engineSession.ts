@@ -6,7 +6,7 @@
 // callbacks.
 
 import type { EngineModule, Renderer, Sim } from "./engineTypes.ts";
-import { BRUSH_CODES, type Control, type InitConfig, type StatsSnapshot, type WalkSnapshot } from "./protocol.ts";
+import { BRUSH_CODES, type Control, type InitConfig, type MapLabel, type StatsSnapshot, type WalkSnapshot } from "./protocol.ts";
 
 export type ReadyInfo = { backend: string; seed: number };
 
@@ -64,11 +64,22 @@ function walkSnapshot(sim: Sim): WalkSnapshot | null {
     yearFrac,
     message: sim.walk_message(),
     target: sim.target_label(),
+    place: sim.walk_place(),
   };
 }
 
-function snapshot(sim: Sim, biomeView: boolean): StatsSnapshot {
-  const [bare, grass, trees, burning, storms, infested, houses] = sim.counts();
+/** On-screen labels: names come once per world, positions every frame. */
+function labels(sim: Sim, names: string[]): MapLabel[] {
+  const f = sim.labels();
+  const out: MapLabel[] = [];
+  for (let k = 0; k + 4 < f.length; k += 5) {
+    out.push({ x: f[k], y: f[k + 1], alpha: f[k + 2], landmark: f[k + 3] > 0.5, text: names[f[k + 4]] ?? "" });
+  }
+  return out;
+}
+
+function snapshot(sim: Sim, biomeView: boolean, names: string[]): StatsSnapshot {
+  const [bare, grass, trees, burning, storms, infested, houses, grazers, wolves] = sim.counts();
   return {
     tick: sim.tick(),
     bare,
@@ -90,6 +101,12 @@ function snapshot(sim: Sim, biomeView: boolean): StatsSnapshot {
     localDiversity: sim.local_diversity(),
     flooding: sim.flooding(),
     houses: houses ?? 0,
+    grazers: grazers ?? 0,
+    wolves: wolves ?? 0,
+    labels: labels(sim, names),
+    selection: ((p) => (p.length >= 2 ? ([p[0], p[1]] as [number, number]) : null))(sim.selected_screen()),
+    biomeEvents: Array.from(sim.biome_events()),
+    eventPlaces: sim.biome_event_places().split("\n"),
     walk: walkSnapshot(sim),
     playing: sim.is_playing(),
     selectedSpeed: sim.selected_speed(),
@@ -123,6 +140,7 @@ export async function startEngineSession(
   // The renderer's terrain is re-uploaded whenever the engine rebuilds it
   // (reseed, landscape params, the ground materials drifting).
   let terrainVersion = -1;
+  let labelNames: string[] = [];
   let rafId = 0;
 
   const frame = (t: number): void => {
@@ -135,6 +153,7 @@ export async function startEngineSession(
       sim.prepare_frame();
       if (sim.terrain_version() !== terrainVersion) {
         terrainVersion = sim.terrain_version();
+        labelNames = sim.label_names().split("\n");
         renderer.set_terrain(
           sim.terrain_vertices(),
           sim.terrain_indices(),
@@ -144,7 +163,7 @@ export async function startEngineSession(
         );
       }
       renderer.render(sim.frame_uniforms(), sim.frame_bytes(), sim.frame_counts(), sim.render_flags());
-      cb.onFrame({ snapshot: snapshot(sim, biomeView) });
+      cb.onFrame({ snapshot: snapshot(sim, biomeView, labelNames) });
     } catch (e) {
       disposed = true;
       cb.onFatal(String(e));
@@ -204,6 +223,11 @@ export async function startEngineSession(
           p.seasons,
           p.cloudDynamics,
           p.biomes,
+          p.patterns,
+          p.mapDesign,
+          p.events,
+          p.fauna,
+          p.autoPlant,
           p.seedTreeP,
           p.seedGrassP,
           p.width,
@@ -252,6 +276,9 @@ export async function startEngineSession(
         break;
       case "inspectTarget":
         cb.onInspect(sim.inspect_target());
+        break;
+      case "clearInspect":
+        sim.clear_selection();
         break;
       case "thirdPerson":
         sim.toggle_third_person();

@@ -76,7 +76,9 @@ test("the world starts in the player's hands", () => {
     assert.equal(p.params.seedTreeP, 0, `${p.key} must not auto-seed trees`);
     assert.equal(p.params.seedGrassP, 0, `${p.key} must not auto-seed grass`);
     assert.equal(p.params.grassSeedP, 0, `${p.key} grass spreads only by creeping`);
+    assert.equal(p.params.autoPlant, 0, `${p.key} must not auto-plant`);
   }
+  assert.equal(DEFAULT_PARAMS.autoPlant, 0, "auto-planting starts off");
 });
 
 test("the regime presets differ along the measured axes", () => {
@@ -114,6 +116,18 @@ test("presets keep the map size and still match on a custom-sized map", () => {
   assert.equal(applied.treeGrowthP, forest.params.treeGrowthP);
   assert.equal(matchingPreset(applied), "moist-forest");
   assert.equal(matchingPreset(big), "defaults");
+  // Auto-planting is a player tool: it survives presets and doesn't break
+  // preset matching.
+  const planting = { ...DEFAULT_PARAMS, autoPlant: 2.5 };
+  assert.equal(applyPreset(forest, planting).autoPlant, 2.5);
+  assert.equal(matchingPreset(planting), "defaults");
+});
+
+test("the auto-plant rate keeps its decimals and clamps", () => {
+  const f = field("autoPlant");
+  assert.equal(withFieldValue(f, DEFAULT_PARAMS, 0.25).autoPlant, 0.25);
+  assert.equal(withFieldValue(f, DEFAULT_PARAMS, -3).autoPlant, 0);
+  assert.equal(withFieldValue(f, DEFAULT_PARAMS, 500).autoPlant, 100);
 });
 
 test("the regional presets lean on the landscape features they showcase", () => {

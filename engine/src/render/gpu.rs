@@ -12,7 +12,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use super::geometry::{
-    bolt_mesh, cap_mesh, column_mesh, cirrus_mesh, cumulonimbus_mesh, cumulus_mesh, flower_mesh, grass_mesh_for, house_mesh,
+    bolt_mesh, cap_mesh, column_mesh, flame_mesh, grazer_mesh, wolf_mesh, cirrus_mesh, cumulonimbus_mesh, cumulus_mesh, flower_mesh, grass_mesh_for, house_mesh,
     mushroom_mesh, nimbostratus_mesh, particle_mesh, rain_mesh, root_mesh, shrub_mesh, smoke_mesh, stump_mesh,
     sun_mesh, tree_lod_mesh_for, tree_mesh_for, MeshData, MeshVertex,
 };
@@ -23,7 +23,7 @@ const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth24Plus;
 const SHADOW_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 const SHADOW_SIZE: u32 = 2048;
 /// Floats in the scene uniform block (see `Globals` in scene.wgsl).
-pub const GLOBAL_FLOATS: usize = 116;
+pub const GLOBAL_FLOATS: usize = 120;
 /// Floats the bridge sends per frame: the globals plus post parameters
 /// [bloom strength, exposure, vignette, bright threshold].
 pub const UNIFORM_FLOATS: usize = GLOBAL_FLOATS + 4;
@@ -175,6 +175,9 @@ pub struct Renderer {
     cloud_pipeline: wgpu::RenderPipeline,
     rain_pipeline: wgpu::RenderPipeline,
     particle_pipeline: wgpu::RenderPipeline,
+    animal_pipeline: wgpu::RenderPipeline,
+    flame_pipeline: wgpu::RenderPipeline,
+    shadow_animal_pipeline: wgpu::RenderPipeline,
     shadow_pipeline: wgpu::RenderPipeline,
     shadow_terrain_pipeline: wgpu::RenderPipeline,
     column_pipeline: wgpu::RenderPipeline,
@@ -411,6 +414,10 @@ impl Renderer {
                 for k in stream::GRASS {
                     self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
                 }
+                pass.set_pipeline(&self.shadow_animal_pipeline);
+                for k in [stream::GRAZERS, stream::WOLVES] {
+                    self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
+                }
             }
         }
 
@@ -466,6 +473,11 @@ impl Renderer {
             for k in opaque {
                 self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
             }
+            pass.set_pipeline(&self.animal_pipeline);
+            for k in [stream::GRAZERS, stream::WOLVES] {
+                self.draw(&mut pass, &self.meshes[k], &self.buffers[k], n[k]);
+            }
+            pass.set_pipeline(&self.pipeline);
             if roots_view {
                 // The ground as glass over the roots.
                 if columns {
@@ -482,6 +494,8 @@ impl Renderer {
             self.draw(&mut pass, &self.meshes[stream::RAIN], &self.buffers[stream::RAIN], n[stream::RAIN]);
             pass.set_pipeline(&self.particle_pipeline);
             self.draw(&mut pass, &self.meshes[stream::PARTICLES], &self.buffers[stream::PARTICLES], n[stream::PARTICLES]);
+            pass.set_pipeline(&self.flame_pipeline);
+            self.draw(&mut pass, &self.meshes[stream::FLAMES], &self.buffers[stream::FLAMES], n[stream::FLAMES]);
             pass.set_pipeline(&self.cloud_pipeline);
             let mut volumes: Vec<usize> = stream::CLOUDS.to_vec();
             volumes.extend([stream::SMOKE, stream::CAP]);
@@ -907,6 +921,18 @@ async fn from_surface(
         &shader,
         spec("particles", "vs_particle", "fs_particle", &mesh_buffers, wgpu::BlendState::ALPHA_BLENDING, blend_depth, None),
     );
+    let animal_pipeline = pipeline(
+        &device,
+        &layout,
+        &shader,
+        spec("animals", "vs_animal", "fs_main", &mesh_buffers, wgpu::BlendState::REPLACE, opaque_depth, None),
+    );
+    let flame_pipeline = pipeline(
+        &device,
+        &layout,
+        &shader,
+        spec("flames", "vs_flame", "fs_flame", &mesh_buffers, wgpu::BlendState::ALPHA_BLENDING, blend_depth, None),
+    );
     let shadow_spec = |label, vs, buffers| PipeSpec {
         label,
         vs,
@@ -919,6 +945,8 @@ async fn from_surface(
         bias: true,
     };
     let shadow_pipeline = pipeline(&device, &shadow_layout, &shader, shadow_spec("shadow", "vs_shadow", &mesh_buffers));
+    let shadow_animal_pipeline =
+        pipeline(&device, &shadow_layout, &shader, shadow_spec("shadow-animals", "vs_animal_shadow", &mesh_buffers));
     let shadow_terrain_pipeline =
         pipeline(&device, &shadow_layout, &shader, shadow_spec("shadow-terrain", "vs_terrain_shadow", &terrain_buffers));
     let shadow_column_pipeline =
@@ -1029,6 +1057,9 @@ async fn from_surface(
                 stream::FLOWERS => flower_mesh(),
                 stream::SHRUBS => shrub_mesh(),
                 stream::PARTICLES => particle_mesh(),
+                stream::FLAMES => flame_mesh(),
+                stream::GRAZERS => grazer_mesh(),
+                stream::WOLVES => wolf_mesh(),
                 stream::CAP => cap_mesh(),
                 // The ground draws as the terrain surface, not a mesh.
                 _ => MeshData { vertices: Vec::new(), indices: Vec::new() },
@@ -1055,6 +1086,9 @@ async fn from_surface(
         cloud_pipeline,
         rain_pipeline,
         particle_pipeline,
+        animal_pipeline,
+        flame_pipeline,
+        shadow_animal_pipeline,
         shadow_pipeline,
         shadow_terrain_pipeline,
         column_pipeline,

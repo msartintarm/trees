@@ -17,7 +17,7 @@ import {
   wheelZoomFactor,
   MAX_DPR,
 } from "../lib/camera.ts";
-import { cloudsText, deathsText, newestCloudEvent, statsText, walkText } from "../lib/hud.ts";
+import { cloudEventIcons, cloudsText, deathsText, newestBiomeEvent, statsLines, walkText } from "../lib/hud.ts";
 import {
   BIOMES,
   GRASS_NAMES,
@@ -27,6 +27,7 @@ import {
   WALK_ACTIONS,
   type Brush,
   type GrassKind,
+  type MapLabel,
   type StatsSnapshot,
   type TreeSpecies,
 } from "../lib/protocol.ts";
@@ -35,6 +36,7 @@ import {
   displayValue,
   applyPreset,
   matchingPreset,
+  AUTO_PLANT_DEFAULT,
   withFieldValue,
   DEFAULT_PARAMS,
   PARAM_FIELDS,
@@ -53,6 +55,86 @@ type Tool = Brush | "inspect";
 const DEFAULT_SEED = 7;
 /** Mouse-look sensitivity, radians per pixel. */
 const LOOK_SPEED = 0.0024;
+
+/** A collapsible panel section. Whether it's open is remembered per
+ * viewer (localStorage, read after mount so the static export hydrates
+ * cleanly; absent storage just means the defaults). */
+function Section({ id, title, open = false, children }: { id: string; title: string; open?: boolean; children: React.ReactNode }) {
+  const [isOpen, setOpen] = useState(open);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem(`tree-sim:section:${id}`);
+      if (v !== null) setOpen(v === "1");
+    } catch {}
+  }, [id]);
+  return (
+    <details
+      className={styles.section}
+      open={isOpen}
+      onToggle={(e) => {
+        const o = (e.currentTarget as HTMLDetailsElement).open;
+        setOpen(o);
+        try {
+          localStorage.setItem(`tree-sim:section:${id}`, o ? "1" : "0");
+        } catch {}
+      }}
+    >
+      <summary>{title}</summary>
+      <div className={styles.sectionBody}>{children}</div>
+    </details>
+  );
+}
+
+/** Pin the inspector card beside its tile on screen: to the right of it,
+ * flipping left near the right edge, clamped into the viewport. Positions
+ * arrive in backing pixels. */
+function placeInspector(card: HTMLDivElement | null, at: [number, number] | null, scale: number, view: DOMRect): void {
+  if (!card) return;
+  if (!at) {
+    card.style.visibility = "hidden";
+    return;
+  }
+  card.style.visibility = "";
+  const [x, y] = [at[0] / scale, at[1] / scale];
+  const w = card.offsetWidth;
+  const h = card.offsetHeight;
+  const gap = 26;
+  let left = x + gap;
+  if (left + w > view.width - 8) left = x - gap - w;
+  left = Math.max(8, Math.min(view.width - w - 8, left));
+  const top = Math.max(8, Math.min(view.height - h - 8, y - h / 2));
+  card.style.transform = `translate(${left.toFixed(0)}px, ${top.toFixed(0)}px)`;
+}
+
+/** Draw this frame's place names over the canvas, reusing a pool of
+ * spans (positions arrive in backing-store pixels). */
+function drawLabels(layer: HTMLDivElement | null, labels: MapLabel[], scale: number, show: boolean): void {
+  if (!layer) return;
+  // Earlier labels win: drop any that would overlap one already placed.
+  const placed: { x: number; y: number; w: number }[] = [];
+  const items = (show ? labels : []).filter((l) => {
+    const x = l.x / scale;
+    const y = l.y / scale;
+    const w = l.text.length * (l.landmark ? 7 : 9.5);
+    if (placed.some((p) => Math.abs(p.x - x) < (p.w + w) / 2 + 8 && Math.abs(p.y - y) < 20)) return false;
+    placed.push({ x, y, w });
+    return true;
+  });
+  while (layer.children.length < items.length) layer.appendChild(document.createElement("span"));
+  for (let k = 0; k < layer.children.length; k++) {
+    const el = layer.children[k] as HTMLSpanElement;
+    const l = items[k];
+    if (!l) {
+      el.style.display = "none";
+      continue;
+    }
+    el.style.display = "";
+    el.textContent = l.text;
+    el.className = l.landmark ? "landmark" : "region";
+    el.style.transform = `translate(${(l.x / scale).toFixed(1)}px, ${(l.y / scale).toFixed(1)}px) translate(-50%, -50%)`;
+    el.style.opacity = l.alpha.toFixed(2);
+  }
+}
 
 /** Movement key bits held for a keyboard code. */
 function keyBit(code: string): number {
@@ -105,6 +187,9 @@ export default function EngineCanvas() {
   const hudRef = useRef<HTMLDivElement | null>(null);
   const deathsRef = useRef<HTMLDivElement | null>(null);
   const weatherRef = useRef<HTMLDivElement | null>(null);
+  const skyRef = useRef<HTMLDivElement | null>(null);
+  const tipRef = useRef<HTMLDivElement | null>(null);
+  const inspectRef = useRef<HTMLDivElement | null>(null);
   const tickerRef = useRef<HTMLDivElement | null>(null);
   const [inspectText, setInspectText] = useState<string | null>(null);
   const [rootsView, setRootsView] = useState(false);
@@ -116,6 +201,11 @@ export default function EngineCanvas() {
   const [biomeShares, setBiomeShares] = useState<number[]>([]);
   const snapshotRef = useRef<StatsSnapshot | null>(null);
   const walkHudRef = useRef<HTMLDivElement | null>(null);
+  const placeRef = useRef<HTMLDivElement | null>(null);
+  const labelsRef = useRef<HTMLDivElement | null>(null);
+  const [names, setNames] = useState(true);
+  const namesRef = useRef(true);
+  namesRef.current = names;
   const targetRef = useRef<HTMLDivElement | null>(null);
   const messageRef = useRef<HTMLDivElement | null>(null);
   const [walking, setWalking] = useState(false);
@@ -160,7 +250,10 @@ export default function EngineCanvas() {
     bootedRef.current = true;
 
     const initial = backingSize(canvas.clientWidth, canvas.clientHeight, devicePixelRatio);
-    let lastEvents: number[] | null = null;
+    let lastBiomeEvents: number[] | null = null;
+    // Recent cloud transitions, shown as emoji with tooltips.
+    let lastCloudEvents: number[] | null = null;
+    let sky: { icon: string; text: string; at: number }[] = [];
     let sharesAt = 0;
     let tickerShownAt = 0;
     const session = createSession(
@@ -170,7 +263,7 @@ export default function EngineCanvas() {
         onReady: (r) => setBackend(r.backend),
         onFrame: (f) => {
           snapshotRef.current = f.snapshot;
-          if (hudRef.current) hudRef.current.textContent = statsText(f.snapshot);
+          if (hudRef.current) hudRef.current.textContent = statsLines(f.snapshot).join("\n");
           if (deathsRef.current) deathsRef.current.textContent = deathsText(f.snapshot);
           if (weatherRef.current) weatherRef.current.textContent = cloudsText(f.snapshot);
           if (biomeViewRef.current && f.snapshot.biomeSamples.length) {
@@ -180,9 +273,32 @@ export default function EngineCanvas() {
               setBiomeShares(f.snapshot.biomeShares);
             }
           }
-          // Weather ticker: announce each cloud transition for a few seconds.
-          const event = newestCloudEvent(lastEvents, f.snapshot.cloudEvents);
-          lastEvents = f.snapshot.cloudEvents;
+          // The ticker: landscape events (fires, floods, blooms, beetle
+          // waves), each shown for a few seconds. Cloud-by-cloud
+          // transitions aren't announced (the census line shows the sky).
+          const event = newestBiomeEvent(lastBiomeEvents, f.snapshot.biomeEvents, f.snapshot.eventPlaces);
+          lastBiomeEvents = f.snapshot.biomeEvents;
+          const fresh = cloudEventIcons(lastCloudEvents, f.snapshot.cloudEvents);
+          lastCloudEvents = f.snapshot.cloudEvents;
+          const now = performance.now();
+          const kept = sky.filter((e) => now - e.at < 30000);
+          if (fresh.length || kept.length !== sky.length) {
+            sky = [...kept, ...fresh.map((e) => ({ ...e, at: now }))].slice(-10);
+            const el = skyRef.current;
+            if (el) {
+              el.replaceChildren(
+                ...sky.map((e) => {
+                  const span = document.createElement("span");
+                  span.textContent = e.icon;
+                  span.dataset.tip = e.text;
+                  return span;
+                }),
+              );
+            }
+          }
+          const rect = canvas.getBoundingClientRect();
+          placeInspector(inspectRef.current, f.snapshot.selection, rect.width > 0 ? lastSize.w / rect.width : 1, rect);
+          drawLabels(labelsRef.current, f.snapshot.labels, rect.width > 0 ? lastSize.w / rect.width : 1, namesRef.current);
           if (event && tickerRef.current) {
             tickerRef.current.textContent = event;
             tickerShownAt = performance.now();
@@ -196,6 +312,7 @@ export default function EngineCanvas() {
             if (walkHudRef.current) walkHudRef.current.textContent = walkText(w);
             if (targetRef.current) targetRef.current.textContent = w.target ? `▸ ${w.target}` : "";
             if (messageRef.current) messageRef.current.textContent = w.message;
+            if (placeRef.current) placeRef.current.textContent = w.place ? `📍 ${w.place}` : "";
           }
         },
         onFatal: (message) => setError(message),
@@ -322,6 +439,25 @@ export default function EngineCanvas() {
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("contextmenu", onContextMenu);
 
+    // ---- instant tooltips for the weather icons ----
+    const skyEl = skyRef.current;
+    const showTip = (e: PointerEvent) => {
+      const el = e.target as HTMLElement | null;
+      const tip = tipRef.current;
+      if (!tip || !el?.dataset.tip) return;
+      tip.textContent = el.dataset.tip;
+      const r = el.getBoundingClientRect();
+      tip.hidden = false;
+      const w = tip.offsetWidth;
+      tip.style.left = `${Math.max(8, Math.min(window.innerWidth - w - 8, r.left + r.width / 2 - w / 2))}px`;
+      tip.style.top = `${r.bottom + 6}px`;
+    };
+    const hideTip = () => {
+      if (tipRef.current) tipRef.current.hidden = true;
+    };
+    skyEl?.addEventListener("pointerover", showTip);
+    skyEl?.addEventListener("pointerout", hideTip);
+
     // ---- walking keys ----
     let held = 0;
     const onKey = (down: boolean) => (e: KeyboardEvent) => {
@@ -376,6 +512,8 @@ export default function EngineCanvas() {
     window.addEventListener("blur", onBlur);
 
     return () => {
+      skyEl?.removeEventListener("pointerover", showTip);
+      skyEl?.removeEventListener("pointerout", hideTip);
       window.removeEventListener("keydown", onKeyDown);
       window.removeEventListener("keyup", onKeyUp);
       window.removeEventListener("blur", onBlur);
@@ -428,6 +566,17 @@ export default function EngineCanvas() {
 
   const activePreset = matchingPreset(params);
 
+  // The auto-plant toggle remembers the last rate it ran at.
+  const autoRateRef = useRef(AUTO_PLANT_DEFAULT);
+  if (params.autoPlant > 0) autoRateRef.current = params.autoPlant;
+  const toggleAutoPlant = () => {
+    const field = PARAM_FIELDS.find((f) => f.key === "autoPlant")!;
+    const next = withFieldValue(field, params, params.autoPlant > 0 ? 0 : autoRateRef.current);
+    setParams(next);
+    setParamText((t) => ({ ...t, autoPlant: String(displayValue(field, next)) }));
+    send({ type: "params", params: next });
+  };
+
   const enterWalk = () => {
     const c = canvasRef.current;
     const w = c?.width ?? 0;
@@ -451,179 +600,204 @@ export default function EngineCanvas() {
   return (
     <div className={styles.wrap}>
       <canvas ref={canvasRef} className={styles.canvas} />
+      <div ref={labelsRef} className={styles.labels} />
       <div className={styles.panel}>
         <p className={styles.title}>Tree Simulator {backend && <span className={styles.hint}>({backend})</span>}</p>
-        <div className={styles.row}>
-          <button onClick={togglePlay}>{playing ? "⏸ Pause" : "▶ Play"}</button>
-          <button onClick={() => send({ type: "step" })}>Step</button>
-          <button onClick={() => send({ type: "resetCamera" })}>Reset view</button>
-        </div>
-        <div className={styles.row}>
-          {walking ? (
-            <button className={styles.active} onClick={exitWalk} title="back to the overview (Q)">
-              🦅 Overview
-            </button>
-          ) : (
-            <button onClick={enterWalk} title="walk the world as a long-lived wanderer: time flows as you move">
-              🚶 Walk
-            </button>
-          )}
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Ground</span>
-          <button
-            className={hexColumns ? styles.active : ""}
-            title="hex columns (stepped, platformer terraces) or a smooth surface"
-            onClick={() => toggle(hexColumns, setHexColumns, (on) => ({ type: "hexColumns", on }))}
-          >
-            ⬢ Columns
-          </button>
-          <button
-            className={landforms ? styles.active : ""}
-            title="exaggerated biome landforms: dunes, mesas, jagged peaks, tundra hummocks"
-            onClick={() => toggle(landforms, setLandforms, (on) => ({ type: "landforms", on }))}
-          >
-            ⛰ Landforms
-          </button>
-          <button
-            className={hexOverlay ? styles.active : ""}
-            title="draw the hex grid on the ground"
-            onClick={() => toggle(hexOverlay, setHexOverlay, (on) => ({ type: "hexOverlay", on }))}
-          >
-            ⬡ Grid
-          </button>
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Light</span>
-          {LIGHT_MODES.map((name, k) => (
+        <Section id="sim" title="▶ Simulation" open>
+          <div className={styles.row}>
+            <button onClick={togglePlay}>{playing ? "⏸ Pause" : "▶ Play"}</button>
+            <button onClick={() => send({ type: "step" })}>Step</button>
+            <button onClick={() => send({ type: "resetCamera" })}>Reset view</button>
+          </div>
+          <div className={styles.row}>
+            <span className={styles.label}>Speed</span>
+            {SPEEDS.map((v) => (
+              <button
+                key={v}
+                className={v === speed ? styles.active : ""}
+                title={v < 0.1 ? "slow enough to see the seasons" : undefined}
+                onClick={() => pickSpeed(v)}
+              >
+                {v < 0.1 ? "🍂" : `${v}×`}
+              </button>
+            ))}
+          </div>
+          <div className={styles.row}>
+            <span className={styles.label}>Seed</span>
+            <input
+              type="number"
+              value={seed}
+              onChange={(e) => setSeed(Number(e.target.value) >>> 0)}
+            />
+            <button onClick={() => send({ type: "reseed", seed })}>Reseed</button>
+          </div>
+        </Section>
+        <Section id="plant" title="🌱 Plant & tools" open>
+          <div className={styles.row}>
+            <span className={styles.label}>Brush</span>
             <button
-              key={name}
-              className={k === lightMode ? styles.active : ""}
-              title={k === 0 ? "follow the time of day (walking); the sun smears into its daily arc as time flies" : undefined}
+              className={params.autoPlant > 0 ? styles.active : ""}
+              title={`plant a random tree or grass on a random open tile, ${autoRateRef.current} per tick (rate under Parameters)`}
+              onClick={toggleAutoPlant}
+            >
+              🎲 Auto-plant
+            </button>
+            {(["fire", "clear", "inspect"] as Tool[]).map((b) => (
+              <button key={b} className={b === brush ? styles.active : ""} onClick={() => setBrush(b)}>
+                {b === "fire" ? "🔥 Fire" : b === "clear" ? "✕ Clear" : "🔍 Inspect"}
+              </button>
+            ))}
+          </div>
+          <div className={styles.row}>
+            <span className={styles.label}>Grass</span>
+            {GRASS_NAMES.map((name, k) => (
+              <button
+                key={name}
+                className={brush === "grass" && grassKind === k ? styles.active : ""}
+                onClick={() => {
+                  setBrush("grass");
+                  setGrassKind(k as GrassKind);
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <div className={styles.row}>
+            <span className={styles.label}>Tree</span>
+            {SPECIES_NAMES.map((name, k) => (
+              <button
+                key={name}
+                className={brush === "tree" && treeSpecies === k ? styles.active : ""}
+                onClick={() => {
+                  setBrush("tree");
+                  setTreeSpecies(k as TreeSpecies);
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+        </Section>
+        <Section id="explore" title="🚶 Explore" open>
+          <div className={styles.row}>
+            {walking ? (
+              <button className={styles.active} onClick={exitWalk} title="back to the overview (Q)">
+                🦅 Overview
+              </button>
+            ) : (
+              <button onClick={enterWalk} title="walk the world as a long-lived wanderer: time flows as you move">
+                🚶 Walk
+              </button>
+            )}
+          </div>
+        </Section>
+        <Section id="view" title="👁 View">
+          <div className={styles.row}>
+            <button
+              className={rootsView ? styles.active : ""}
+              title="show root systems under glass ground; blue = reaching groundwater"
               onClick={() => {
-                setLightMode(k);
-                send({ type: "lightMode", mode: k });
+                send({ type: "rootsView", on: !rootsView });
+                setRootsView(!rootsView);
               }}
             >
-              {name}
+              🌱 Roots
             </button>
-          ))}
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Quality</span>
-          <button
-            className={bloom ? styles.active : ""}
-            title="bloom: bright light glows (sun, glints, fireflies)"
-            onClick={() => toggle(bloom, setBloom, (on) => ({ type: "bloom", on }))}
-          >
-            ✨ Bloom
-          </button>
-          <button
-            className={detail ? styles.active : ""}
-            title="close-up parallax relief on rock, sand and tundra"
-            onClick={() => {
-              setDetail(!detail);
-              send({ type: "detail", value: detail ? 0 : 1 });
-            }}
-          >
-            🔎 Detail
-          </button>
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Speed</span>
-          {SPEEDS.map((v) => (
             <button
-              key={v}
-              className={v === speed ? styles.active : ""}
-              title={v < 0.1 ? "slow enough to see the seasons" : undefined}
-              onClick={() => pickSpeed(v)}
-            >
-              {v < 0.1 ? "🍂" : `${v}×`}
-            </button>
-          ))}
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Brush</span>
-          {(["fire", "clear", "inspect"] as Tool[]).map((b) => (
-            <button key={b} className={b === brush ? styles.active : ""} onClick={() => setBrush(b)}>
-              {b === "fire" ? "🔥 Fire" : b === "clear" ? "✕ Clear" : "🔍 Inspect"}
-            </button>
-          ))}
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>View</span>
-          <button
-            className={rootsView ? styles.active : ""}
-            title="show root systems under glass ground; blue = reaching groundwater"
-            onClick={() => {
-              send({ type: "rootsView", on: !rootsView });
-              setRootsView(!rootsView);
-            }}
-          >
-            🌱 Roots
-          </button>
-          <button
-            className={biomeView ? styles.active : ""}
-            title="tint the ground by climate biome, with a legend and a Whittaker chart"
-            onClick={() => {
-              send({ type: "biomeView", on: !biomeView });
-              setBiomeView(!biomeView);
-            }}
-          >
-            🗺 Biomes
-          </button>
-          <button
-            className={flashes ? styles.active : ""}
-            title="lightning flashes (a local glow around each strike); turn off to avoid any flashing"
-            onClick={() => {
-              send({ type: "flashes", on: !flashes });
-              setFlashes(!flashes);
-            }}
-          >
-            ⚡ Flashes
-          </button>
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Grass</span>
-          {GRASS_NAMES.map((name, k) => (
-            <button
-              key={name}
-              className={brush === "grass" && grassKind === k ? styles.active : ""}
+              className={biomeView ? styles.active : ""}
+              title="tint the ground by climate biome, with a legend and a Whittaker chart"
               onClick={() => {
-                setBrush("grass");
-                setGrassKind(k as GrassKind);
+                send({ type: "biomeView", on: !biomeView });
+                setBiomeView(!biomeView);
               }}
             >
-              {name}
+              🗺 Biomes
             </button>
-          ))}
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Tree</span>
-          {SPECIES_NAMES.map((name, k) => (
             <button
-              key={name}
-              className={brush === "tree" && treeSpecies === k ? styles.active : ""}
+              className={names ? styles.active : ""}
+              title="region and landmark names over the map"
+              onClick={() => setNames(!names)}
+            >
+              🏷 Names
+            </button>
+            <button
+              className={flashes ? styles.active : ""}
+              title="lightning flashes (a local glow around each strike); turn off to avoid any flashing"
               onClick={() => {
-                setBrush("tree");
-                setTreeSpecies(k as TreeSpecies);
+                send({ type: "flashes", on: !flashes });
+                setFlashes(!flashes);
               }}
             >
-              {name}
+              ⚡ Flashes
             </button>
-          ))}
-        </div>
-        <div className={styles.row}>
-          <span className={styles.label}>Seed</span>
-          <input
-            type="number"
-            value={seed}
-            onChange={(e) => setSeed(Number(e.target.value) >>> 0)}
-          />
-          <button onClick={() => send({ type: "reseed", seed })}>Reseed</button>
-        </div>
-        <details className={styles.params}>
-          <summary>Parameters</summary>
+          </div>
+        </Section>
+        <Section id="ground" title="⛰ Ground">
+          <div className={styles.row}>
+            <button
+              className={hexColumns ? styles.active : ""}
+              title="hex columns (stepped, platformer terraces) or a smooth surface"
+              onClick={() => toggle(hexColumns, setHexColumns, (on) => ({ type: "hexColumns", on }))}
+            >
+              ⬢ Columns
+            </button>
+            <button
+              className={landforms ? styles.active : ""}
+              title="exaggerated biome landforms: dunes, mesas, jagged peaks, tundra hummocks"
+              onClick={() => toggle(landforms, setLandforms, (on) => ({ type: "landforms", on }))}
+            >
+              ⛰ Landforms
+            </button>
+            <button
+              className={hexOverlay ? styles.active : ""}
+              title="draw the hex grid on the ground"
+              onClick={() => toggle(hexOverlay, setHexOverlay, (on) => ({ type: "hexOverlay", on }))}
+            >
+              ⬡ Grid
+            </button>
+          </div>
+        </Section>
+        <Section id="light" title="☀ Light & quality">
+          <div className={styles.row}>
+            <span className={styles.label}>Light</span>
+            {LIGHT_MODES.map((name, k) => (
+              <button
+                key={name}
+                className={k === lightMode ? styles.active : ""}
+                title={k === 0 ? "follow the time of day (walking); the sun smears into its daily arc as time flies" : undefined}
+                onClick={() => {
+                  setLightMode(k);
+                  send({ type: "lightMode", mode: k });
+                }}
+              >
+                {name}
+              </button>
+            ))}
+          </div>
+          <div className={styles.row}>
+            <span className={styles.label}>Quality</span>
+            <button
+              className={bloom ? styles.active : ""}
+              title="bloom: bright light glows (sun, glints, fireflies)"
+              onClick={() => toggle(bloom, setBloom, (on) => ({ type: "bloom", on }))}
+            >
+              ✨ Bloom
+            </button>
+            <button
+              className={detail ? styles.active : ""}
+              title="close-up parallax relief on rock, sand and tundra"
+              onClick={() => {
+                setDetail(!detail);
+                send({ type: "detail", value: detail ? 0 : 1 });
+              }}
+            >
+              🔎 Detail
+            </button>
+          </div>
+        </Section>
+        <Section id="params" title="⚙ Parameters">
+          <div className={styles.params}>
           <label className={styles.paramRow}>
             <span>Preset</span>
             <select
@@ -666,7 +840,8 @@ export default function EngineCanvas() {
             </label>
           ))}
           <div className={styles.hint}>* applies on Reseed</div>
-        </details>
+                  </div>
+        </Section>
         <div className={styles.hint}>
           the world starts empty — paint life with the brushes · click: plant ·
           drag: orbit · shift/right-drag: pan · wheel: zoom
@@ -676,6 +851,7 @@ export default function EngineCanvas() {
         <>
           <div className={styles.crosshair} />
           <div className={styles.walkHud}>
+            <div ref={placeRef} className={styles.place} />
             <div ref={walkHudRef} />
             <div ref={targetRef} className={styles.weather} />
             <div ref={messageRef} className={styles.ticker} />
@@ -698,29 +874,39 @@ export default function EngineCanvas() {
           </div>
         </>
       )}
-      <div className={styles.hud}>
-        <div ref={hudRef}>loading…</div>
-        <div ref={weatherRef} className={styles.weather} />
-        <div ref={tickerRef} className={styles.ticker} />
-        <div ref={deathsRef} className={styles.deaths} />
-      </div>
-      {biomeView && (
-        <div className={styles.biomes}>
-          <div className={styles.inspectTitle}>Biomes</div>
-          {BIOMES.map((b, k) => (
-            <div key={b.name} className={styles.legendRow}>
-              <span className={styles.swatch} style={{ background: b.color }} />
-              {b.name}
-              {biomeShares[k] !== undefined && <span className={styles.share}>{Math.round(biomeShares[k] * 100)}%</span>}
-            </div>
-          ))}
-          <canvas ref={chartRef} width={200} height={140} className={styles.chart} />
-          <div className={styles.hint}>Whittaker chart: temperature → · water ↑</div>
+      <div className={styles.side}>
+        <div className={styles.hud}>
+          <div ref={hudRef} className={styles.stats}>loading…</div>
+          <div ref={weatherRef} className={styles.weather} />
+          <div ref={skyRef} className={styles.sky} />
+          <div ref={tickerRef} className={styles.ticker} />
+          <div ref={deathsRef} className={styles.deaths} />
         </div>
-      )}
-      {inspectText && (
-        <div className={styles.inspect}>
-          <button className={styles.close} onClick={() => setInspectText(null)} aria-label="close">
+        {biomeView && (
+          <div className={styles.biomes}>
+            <div className={styles.inspectTitle}>Biomes</div>
+            {BIOMES.map((b, k) => (
+              <div key={b.name} className={styles.legendRow}>
+                <span className={styles.swatch} style={{ background: b.color }} />
+                {b.name}
+                {biomeShares[k] !== undefined && <span className={styles.share}>{Math.round(biomeShares[k] * 100)}%</span>}
+              </div>
+            ))}
+            <canvas ref={chartRef} width={200} height={140} className={styles.chart} />
+            <div className={styles.hint}>Whittaker chart: temperature → · water ↑</div>
+          </div>
+        )}
+        </div>
+    {inspectText && (
+        <div ref={inspectRef} className={styles.inspect}>
+          <button
+          className={styles.close}
+          onClick={() => {
+            setInspectText(null);
+            send({ type: "clearInspect" });
+          }}
+          aria-label="close"
+        >
             ✕
           </button>
           {inspectText.split("\n").map((line, k) => (
@@ -730,6 +916,7 @@ export default function EngineCanvas() {
           ))}
         </div>
       )}
+      <div ref={tipRef} className={styles.tip} hidden />
       {error && <div className={styles.error}>engine failed to start:{"\n"}{error}</div>}
     </div>
   );

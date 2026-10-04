@@ -372,8 +372,26 @@ pub fn cumulonimbus_mesh() -> MeshData {
     let mut m = MeshData::new();
     let flat = -0.3f32;
     ellipsoid(&mut m, [0.0, 0.0, 0.6], [4.6, 4.6, 1.3], flat, CB_BASE, CB_MID, CLOUD_WEIGHT);
-    for (z, r) in [(2.4f32, 3.6f32), (4.4, 3.3), (6.4, 3.0), (8.2, 2.7)] {
-        ellipsoid(&mut m, [0.2, 0.0, z], [r, r, 1.5], -1.2, CB_MID, CB_ANVIL, CLOUD_WEIGHT);
+    // The tower: overlapping updraft cells bulging out at staggered
+    // heights and angles (cauliflower turrets), narrowing as it rises —
+    // not a stack of discs.
+    for level in 0..7 {
+        let z = 2.0 + 1.15 * level as f32;
+        let r = 3.4 - 0.18 * level as f32;
+        for k in 0..4 {
+            let a = 1.7 * level as f32 + std::f32::consts::FRAC_PI_2 * k as f32;
+            let off = 0.45 * r;
+            let cell = (0.55 + 0.12 * ((level * 7 + k * 3) % 5) as f32) * r;
+            ellipsoid(
+                &mut m,
+                [0.2 + off * a.cos(), off * a.sin(), z + 0.3 * (k % 2) as f32],
+                [cell, cell, cell * 0.85],
+                -1.2,
+                CB_MID,
+                CB_ANVIL,
+                CLOUD_WEIGHT,
+            );
+        }
     }
     // The anvil: wide, flat, blown downwind, with an overshooting top.
     ellipsoid(&mut m, [2.2, 0.0, 10.0], [6.0, 4.4, 0.7], -1.3, CB_MID, CB_ANVIL, CLOUD_WEIGHT);
@@ -648,6 +666,46 @@ pub fn particle_mesh() -> MeshData {
     let ids: Vec<u32> = v.iter().map(|&p| m.push(p, p, [1.0; 3], 0.0)).collect();
     for (a, b) in [(0, 2), (2, 1), (1, 3), (3, 0)] {
         m.indices.extend([ids[a], ids[b], ids[4], ids[b], ids[a], ids[5]]);
+    }
+    m
+}
+
+
+/// A grazer, facing +x (the shader turns it to its heading): a deep body
+/// with a shoulder hump, a lowered head, and four legs. Instance-colored
+/// coat; dark hooves and muzzle baked in.
+pub fn grazer_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    let dark = [0.12, 0.10, 0.08];
+    ellipsoid_n(&mut m, [0.0, 0.0, 0.24], [0.22, 0.10, 0.09], 4, 8);
+    ellipsoid_n(&mut m, [0.08, 0.0, 0.30], [0.10, 0.09, 0.07], 3, 7);
+    ellipsoid_n(&mut m, [0.25, 0.0, 0.22], [0.07, 0.05, 0.05], 3, 6);
+    for (x, y) in [(0.13f32, 0.05f32), (0.13, -0.05), (-0.14, 0.05), (-0.14, -0.05)] {
+        cylinder(&mut m, 4, x, y, 0.018, 0.0, 0.18, [1.0; 3], 0.0);
+        cylinder(&mut m, 4, x, y, 0.02, 0.0, 0.03, dark, 1.0);
+    }
+    m
+}
+
+/// A wolf, facing +x: a lean body, long legs, an upright head and a
+/// low-carried tail.
+pub fn wolf_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    ellipsoid_n(&mut m, [0.0, 0.0, 0.24], [0.2, 0.07, 0.07], 4, 8);
+    ellipsoid_n(&mut m, [0.22, 0.0, 0.31], [0.07, 0.05, 0.05], 3, 6);
+    cone(&mut m, 5, 0.29, 0.0, 0.03, 0.29, 0.26, [0.2, 0.18, 0.16], 1.0);
+    ellipsoid_n(&mut m, [-0.24, 0.0, 0.18], [0.1, 0.03, 0.03], 3, 5);
+    for (x, y) in [(0.12f32, 0.04f32), (0.12, -0.04), (-0.12, 0.04), (-0.12, -0.04)] {
+        cylinder(&mut m, 4, x, y, 0.015, 0.0, 0.2, [1.0; 3], 0.0);
+    }
+    m
+}
+
+/// Flames: a cluster of tongues (the shader flickers and sways them).
+pub fn flame_mesh() -> MeshData {
+    let mut m = MeshData::new();
+    for (x, y, r, h) in [(0.0f32, 0.0f32, 0.22f32, 0.75f32), (0.25, 0.1, 0.15, 0.5), (-0.22, 0.15, 0.16, 0.55), (0.05, -0.25, 0.14, 0.45), (-0.15, -0.18, 0.12, 0.4)] {
+        cone(&mut m, 6, x, y, r, 0.0, h, [1.0; 3], 0.0);
     }
     m
 }

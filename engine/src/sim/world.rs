@@ -43,7 +43,9 @@
 use super::hex;
 use super::rng::{self, Stream};
 use super::hex::Grid;
-use super::terrain::{Terrain, MACRO_RENDER, RENDER_RELIEF};
+use super::fauna::Fauna;
+use super::places::{self, Places};
+use super::terrain::{Landmark, LandmarkKind, Terrain, MACRO_RENDER, RENDER_RELIEF};
 
 pub const GRASS_SEED_P: f64 = 0.0;
 pub const GRASS_CLONAL_P: f64 = 0.08;
@@ -362,6 +364,40 @@ pub const INTRACLOUD_P: f64 = 0.12;
 /// descent on lee slopes, raining, and — for small cumulus — evaporation
 /// over hot dry ground remove it.
 pub const CLOUD_DYNAMICS: f64 = 1.0;
+pub const PATTERNS: f64 = 1.0;
+/// The great tree's head start: it is already this old at creation.
+pub const ELDER_AGE: u64 = 380;
+/// Share of trees that become veterans (escape most background mortality
+/// once well established — the rare individuals that reach great age).
+pub const VETERAN_P: f64 = 0.06;
+/// How much of the background hazard a veteran is spared.
+pub const VETERAN_SPARE: f64 = 0.8;
+/// Extra seed-shadow decay per ring beyond the recruitment peak (most
+/// seed falls within a crown or two of the parent).
+pub const CLUMP_DECAY: f64 = 0.7;
+/// Stress-gradient facilitation: under a harsh climate, seedlings survive
+/// better beside established adults (shelter, shared mycorrhizae).
+pub const EDGE_FACILITATION: f64 = 1.2;
+/// A long-distance seedling far from any adult lacks mycorrhizal partners.
+pub const ISOLATION_PENALTY: f64 = 0.5;
+/// Runoff on arid slopes: how much of the water it carries a tile gains or
+/// loses (tiger bush: bare crusted ground sheds, vegetation soaks it up).
+pub const RUNOFF_GAIN: f64 = 0.4;
+/// Grass that has regrown for fewer years than this carries little fire
+/// (fuel accumulates with time since the last burn).
+pub const FUEL_YEARS: f64 = 4.0;
+/// Bark beetles fly: spread to conspecifics two rings out.
+pub const BEETLE_FLIGHT: f64 = 0.15;
+/// With fauna, the share of grazing and browsing that follows the herds;
+/// the rest is the resident wildlife (deer, rabbits, insects) everywhere.
+pub const HERD_SHARE: f64 = 0.6;
+pub const MAP_DESIGN: f64 = 1.0;
+pub const EVENTS: f64 = 1.0;
+pub const FAUNA: f64 = 1.0;
+/// Most plants auto-planting may set down per tick.
+pub const AUTO_PLANT_MAX: f64 = 100.0;
+/// Random tiles tried per planting before giving up (a crowded map).
+const AUTO_PLANT_TRIES: u32 = 8;
 pub const CLOUD_EVAP: f64 = 0.018;
 pub const CLOUD_LIFT: f64 = 0.35;
 pub const CLOUD_SINK: f64 = 0.25;
@@ -531,12 +567,14 @@ pub struct Storm {
 /// Seed-rain kernel weight by hex distance from a mature tree: the
 /// Janzen-Connell dip at distance 1, recruitment peak at 2, exponential
 /// decay beyond.
-fn kernel_weight(d: i32) -> f64 {
+/// `patterns` steepens the tail: seed rain concentrates near the parent,
+/// so stands grow as clumps with edges.
+fn kernel_weight_clumped(d: i32, patterns: f64) -> f64 {
     match d {
         0 => 0.0,
         1 => 0.25,
         2 => 1.0,
-        d => (-0.9 * (d as f64 - 2.0)).exp(),
+        d => (-(0.9 + CLUMP_DECAY * patterns) * (d as f64 - 2.0)).exp(),
     }
 }
 
@@ -630,6 +668,29 @@ pub struct Params {
     /// rains itself out, and new cumulus form in place. 0 = clouds keep
     /// their birth genus and drift across unchanged.
     pub cloud_dynamics: f64,
+    /// Vegetation self-organization: clumped seed shadows and edge
+    /// facilitation (forests grow as stands with edges, not a sprinkle),
+    /// veteran trees that escape the usual mortality to reach great age,
+    /// runoff-driven banding on arid slopes (tiger bush), fuel-limited
+    /// fire mosaics, and flying bark-beetle waves. 0 = none.
+    pub patterns: f64,
+    /// A physically caused map (applies on reseed): an onshore prevailing
+    /// wind, a mountain spine across it, rain from moisture advection (wet
+    /// windward slopes, a rain shadow behind), and landmarks — a glacier on
+    /// the highest peak, a crater lake, a desert oasis, a waterfall, a
+    /// great tree. 0 = the noise-generated landscape.
+    pub map_design: f64,
+    /// Biome events: desert ephemerals germinating en masse after rain
+    /// (the superbloom). 0 = none.
+    pub events: f64,
+    /// Animals: grazing herds that follow forage and water, wolf packs
+    /// that hunt them (and, through fear, spare the saplings where they
+    /// roam). 0 = the static grazing/browse fields.
+    pub fauna: f64,
+    /// Auto-planting: plants set down per tick, each on a random bare tile
+    /// as a random tree species or grass kind (0 = off). Fractional rates
+    /// plant on a fixed schedule (0.25 = every fourth tick).
+    pub auto_plant: f64,
     pub seed_tree_p: f64,
     pub seed_grass_p: f64,
     /// Map size in tiles (applies on the next reseed, like the seeding
@@ -671,6 +732,11 @@ impl Default for Params {
             seasons: SEASONS,
             cloud_dynamics: CLOUD_DYNAMICS,
             biomes: BIOMES,
+            patterns: PATTERNS,
+            map_design: MAP_DESIGN,
+            events: EVENTS,
+            fauna: FAUNA,
+            auto_plant: 0.0,
             seed_tree_p: SEED_TREE_P,
             seed_grass_p: SEED_GRASS_P,
             width: Grid::DEFAULT.width as u32,
@@ -696,6 +762,10 @@ impl Params {
             seasons: 0.0,
             cloud_dynamics: 0.0,
             biomes: 0.0,
+            patterns: 0.0,
+            map_design: 0.0,
+            events: 0.0,
+            fauna: 0.0,
             ..Params::default()
         }
     }
@@ -729,6 +799,11 @@ impl Params {
         self.seasons = prob(self.seasons, SEASONS);
         self.cloud_dynamics = prob(self.cloud_dynamics, CLOUD_DYNAMICS);
         self.biomes = prob(self.biomes, BIOMES);
+        self.patterns = prob(self.patterns, PATTERNS);
+        self.map_design = prob(self.map_design, MAP_DESIGN);
+        self.events = prob(self.events, EVENTS);
+        self.fauna = prob(self.fauna, FAUNA);
+        self.auto_plant = if self.auto_plant.is_finite() { self.auto_plant.clamp(0.0, AUTO_PLANT_MAX) } else { 0.0 };
         self.mutation_rate = if self.mutation_rate.is_finite() {
             self.mutation_rate.clamp(0.0, 0.2)
         } else {
@@ -1357,6 +1432,32 @@ pub enum CloudEvent {
 
 pub const CLOUD_EVENT_COUNT: usize = 8;
 
+/// Landscape events, tallied (with where they happened) for the ticker.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BiomeEvent {
+    /// A desert soaked by rain bursts into ephemeral flowers.
+    Superbloom = 0,
+    /// A wildfire grows past a few dozen tiles.
+    Wildfire = 1,
+    /// Bark beetles erupt through a conifer forest.
+    BeetleWave = 2,
+    /// A river floods its floodplain.
+    Flood = 3,
+}
+
+pub const BIOME_EVENT_COUNT: usize = 4;
+/// Ticks a desert bloom lasts (ephemerals flower and seed within weeks;
+/// a tick is a year, so this is one season's display).
+pub const BLOOM_TICKS: u8 = 3;
+/// Desert ephemerals germinating from the seed bank after a soaking rain:
+/// the extra germination of annuals on wet desert ground.
+pub const SUPERBLOOM_GERMINATION: f64 = 6.0;
+/// Burning tiles that make a fire an event.
+pub const WILDFIRE_TILES: u32 = 60;
+/// Infested conifers that make an outbreak an event.
+pub const BEETLE_WAVE_TREES: u32 = 40;
+
 /// Climate biome of a tile (Whittaker-style: site temperature × water),
 /// with saturated ground as wetland.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1544,6 +1645,31 @@ pub struct World {
     last_strike: Option<usize>,
     /// Structures the player built (1 = a house): nothing grows there.
     built: Vec<u8>,
+    /// The great tree planted at creation on a designed map: (tile, birth
+    /// tick). It counts ELDER_AGE extra years of age while it lives.
+    elder: Option<(usize, u64)>,
+    /// Landmarks: the terrain's, plus the waterfall and the great tree.
+    landmarks: Vec<Landmark>,
+    /// Named regions.
+    places: Places,
+    /// Runoff routing on arid slopes: each tile's steepest-descent
+    /// neighbor (u32::MAX = none), tiles from highest to lowest, and this
+    /// tick's water gained (+) or shed (−) per tile.
+    downhill: Vec<u32>,
+    drop_order: Vec<u32>,
+    runoff: Vec<f32>,
+    /// Seed-shadow normalization: a clumped shadow keeps the same total
+    /// seed output as the original, only concentrated near the parent.
+    kernel_norm: f32,
+    /// Desert bloom ticks remaining per tile (events).
+    bloom: Vec<u8>,
+    /// Herds and packs (fauna).
+    fauna: Fauna,
+    /// Landscape events: tallies, the tile and tick of the latest of each,
+    /// and whether each is still under way (so one fire is one event).
+    biome_events: [u32; BIOME_EVENT_COUNT],
+    biome_event_at: [Option<(usize, u64)>; BIOME_EVENT_COUNT],
+    event_active: [bool; BIOME_EVENT_COUNT],
     /// Mature-tree count at distance 1 (crowding pressure).
     mature_nbrs: Vec<u8>,
     /// Grass count at distance 1 (clonal spread pressure).
@@ -1642,6 +1768,18 @@ impl World {
             soaked: vec![0; n],
             remains_cause: vec![0; n],
             built: vec![0; n],
+            elder: None,
+            landmarks: Vec::new(),
+            places: Places::default(),
+            downhill: Vec::new(),
+            drop_order: Vec::new(),
+            runoff: vec![0.0; n],
+            bloom: vec![0; n],
+            kernel_norm: 1.0,
+            fauna: Fauna::new(n),
+            biome_events: [0; BIOME_EVENT_COUNT],
+            biome_event_at: [None; BIOME_EVENT_COUNT],
+            event_active: [false; BIOME_EVENT_COUNT],
             deaths_total: [0; DEATH_CAUSE_COUNT],
             deaths_recent: [0.0; DEATH_CAUSE_COUNT],
             cloud_events: [0; CLOUD_EVENT_COUNT],
@@ -1657,7 +1795,7 @@ impl World {
             gene_rain: vec![[[0.0; 2]; SPECIES_COUNT]; n],
             sero: vec![0; n],
             sero_gene: vec![[1.0, 1.0]; n],
-            terrain: Terrain::generate(seed, grid),
+            terrain: Terrain::generate_designed(seed, grid, params.map_design),
             grass_nbrs_k: vec![[0; GRASS_KIND_COUNT]; n],
             seed_bank: vec![0.0; n],
             range_disk: hex::disk(params.tree_range),
@@ -1679,6 +1817,8 @@ impl World {
             params,
         };
         w.rebuild_rivers();
+        w.rebuild_slopes();
+        w.kernel_norm = w.seed_shadow_norm();
         // The world's climate is needed before seeding (site fits below).
         let (sun, moisture) = w.climate_at(0);
         w.sun = sun;
@@ -1691,8 +1831,8 @@ impl World {
         let species_pool = if biomes { SPECIES_COUNT } else { BASE_SPECIES };
         let grass_pool = if biomes { GRASS_KIND_COUNT } else { BASE_GRASS_KINDS };
         for i in 0..n {
-            if w.channel[i] {
-                continue; // open water
+            if w.channel[i] || w.terrain.ice[i] {
+                continue; // open water, glacier ice
             }
             if rng::uniform01(seed, i as u32, 0, Stream::Seeding) < w.params.seed_tree_p {
                 let roll = rng::hash(seed, i as u32, 0, Stream::SpeciesChoice);
@@ -1721,7 +1861,109 @@ impl World {
         w.sun = sun;
         w.moisture = moisture;
         w.mast = w.mast_at(0);
+        w.site_landmarks();
         w
+    }
+
+    /// The world-owned landmarks (the waterfall needs the rivers, the great
+    /// tree the ecology) and the region names.
+    fn site_landmarks(&mut self) {
+        self.landmarks = self.terrain.landmarks.clone();
+        if self.params.map_design > 0.0 {
+            // The waterfall: the steepest drop between adjacent channel
+            // tiles.
+            let mut best: Option<(f32, usize)> = None;
+            for i in 0..self.grid.cells() {
+                if !self.channel[i] || self.terrain.lake[i] {
+                    continue;
+                }
+                let (q, r) = self.grid.index_to_axial(i);
+                for (dq, dr) in hex::NEIGHBORS {
+                    if let Some(j) = self.grid.axial_to_index(q + dq, r + dr) {
+                        if self.channel[j] && !self.terrain.lake[j] {
+                            let drop = self.elevation(i) - self.elevation(j);
+                            if best.is_none_or(|(d, _)| drop > d) {
+                                best = Some((drop, i));
+                            }
+                        }
+                    }
+                }
+            }
+            if let Some((drop, i)) = best {
+                if drop > 0.8 {
+                    self.landmarks.push(Landmark { kind: LandmarkKind::Waterfall, tile: i });
+                }
+            }
+            // The great tree: the most favorable open hill site for the
+            // best-suited of the original species, planted as an ancient.
+            let biomes = self.params.biomes > 0.0;
+            if biomes {
+                self.refresh_site_cache();
+            }
+            let mut pick: Option<(f64, usize, Species)> = None;
+            for i in (0..self.grid.cells()).step_by(3) {
+                if self.channel[i] || self.terrain.ice[i] || self.state[i] != Cell::Bare {
+                    continue;
+                }
+                let hill = self.terrain.elevation[i] as f64;
+                for k in 0..BASE_SPECIES {
+                    let e = self.tree_establishment(i, k, 1.0) * (0.6 + hill)
+                        * (0.8 + 0.4 * rng::uniform01(self.seed, i as u32, 0, Stream::Places));
+                    if pick.is_none_or(|(b, _, _)| e > b) {
+                        pick = Some((e, i, Species::from_u8(k as u8)));
+                    }
+                }
+            }
+            if let Some((_, i, sp)) = pick {
+                self.plant_tree(i, sp, 0);
+                self.elder = Some((i, 0));
+                self.landmarks.push(Landmark { kind: LandmarkKind::GreatTree, tile: i });
+            }
+        }
+        let biome: Vec<Biome> = (0..self.grid.cells()).map(|i| self.biome(i)).collect();
+        self.places = Places::find(self.seed, self.grid, &biome);
+    }
+
+    /// Landmarks with their names.
+    pub fn landmarks(&self) -> Vec<(LandmarkKind, usize, String)> {
+        let tree = self
+            .elder
+            .map(|(i, _)| self.species(i).traits().name)
+            .unwrap_or("Oak");
+        self.landmarks
+            .iter()
+            .map(|l| (l.kind, l.tile, places::landmark_name(self.seed, l.kind, l.tile, tree)))
+            .collect()
+    }
+
+    /// The named regions.
+    pub fn regions(&self) -> &[places::Region] {
+        &self.places.regions
+    }
+
+    /// The name of the region a tile lies in.
+    pub fn region_name(&self, i: usize) -> Option<&str> {
+        self.places.region_of(i).map(|r| r.name.as_str())
+    }
+
+    /// Direction the prevailing wind blows toward (onshore, from the coast).
+    pub fn prevailing_wind(&self) -> [f64; 2] {
+        self.terrain.wind
+    }
+
+    /// Glacier ice on a tile.
+    pub fn is_ice(&self, i: usize) -> bool {
+        self.terrain.ice[i]
+    }
+
+    /// Lake water (crater lake, oasis pool) on a tile.
+    pub fn is_lake(&self, i: usize) -> bool {
+        self.terrain.lake[i]
+    }
+
+    /// Whether this tile holds the great tree.
+    pub fn is_elder(&self, i: usize) -> bool {
+        self.elder.is_some_and(|(t, b)| t == i && self.state[i] == Cell::Tree && self.born[i] == b)
     }
 
     /// Oak mast years: synchronized across the whole map (one draw per
@@ -1843,7 +2085,11 @@ impl World {
             None => 0.0,
         };
         let near = near_river.max(self.terrain.water[index] as f64);
-        self.params.grazing * (0.3 + 0.7 * near)
+        let field = 0.3 + 0.7 * near;
+        // With fauna, grazing is wherever the herds actually are.
+        let f = self.params.fauna * HERD_SHARE;
+        let herds = self.fauna.pressure.get(index).copied().unwrap_or(0.0) as f64;
+        self.params.grazing * (field * (1.0 - f) + f * herds.min(1.0))
     }
 
     /// Normalized terrain layers for display/probes: (elevation, heat, depth).
@@ -2104,7 +2350,7 @@ impl World {
             let wt = self.water_table(index) as f64 * WATER_TABLE_REACH;
             let retention = 0.85 + 0.15 * self.soil_depth(index);
             let m = (self.moisture + self.rain_shift(index)).clamp(0.0, 1.0);
-            (m + (1.0 - m) * wt) * retention
+            ((m + (1.0 - m) * wt) * retention + self.runoff[index] as f64).clamp(0.0, 1.0)
         }
     }
 
@@ -2161,9 +2407,92 @@ impl World {
             self.range_disk = hex::disk(params.tree_range);
         }
         let rivers_changed = params.rivers != self.params.rivers;
+        let relief_changed = params.terrain != self.params.terrain || params.climate_zones != self.params.climate_zones;
         self.params = params;
         if rivers_changed {
             self.rebuild_rivers();
+        }
+        if relief_changed {
+            self.rebuild_slopes();
+        }
+        self.kernel_norm = self.seed_shadow_norm();
+    }
+
+    /// Total seed-shadow mass over the dispersal range, original over
+    /// clumped (rings hold 6d tiles).
+    fn seed_shadow_norm(&self) -> f32 {
+        let mass = |p: f64| (1..=self.params.tree_range).map(|d| 6.0 * d as f64 * kernel_weight_clumped(d, p)).sum::<f64>();
+        (mass(0.0) / mass(self.params.patterns).max(1e-9)) as f32
+    }
+
+    /// Steepest-descent routing over the rendered relief (for runoff).
+    fn rebuild_slopes(&mut self) {
+        let n = self.grid.cells();
+        self.downhill = (0..n)
+            .map(|i| {
+                let (q, r) = self.grid.index_to_axial(i);
+                let h = self.elevation(i);
+                let mut best = (u32::MAX, h - 0.02);
+                for (dq, dr) in hex::NEIGHBORS {
+                    if let Some(j) = self.grid.axial_to_index(q + dq, r + dr) {
+                        let hj = self.elevation(j);
+                        if hj < best.1 {
+                            best = (j as u32, hj);
+                        }
+                    }
+                }
+                best.0
+            })
+            .collect();
+        let mut order: Vec<u32> = (0..n as u32).collect();
+        order.sort_by(|&a, &b| self.elevation(b as usize).partial_cmp(&self.elevation(a as usize)).unwrap());
+        self.drop_order = order;
+    }
+
+    /// Runoff on arid slopes (Klausmeier 1999; Rietkerk et al. 2002): rain
+    /// on bare, crusted ground runs off downhill; vegetation catches it.
+    /// Routed from the highest tile to the lowest, each tile infiltrates a
+    /// share of what reaches it (bare little, grass more, trees most) and
+    /// passes the rest on. Plants downslope of bare ground drink more,
+    /// bare ground stays drier — so vegetation self-organizes into bands
+    /// along the contours (tiger bush), wherever it's dry and sloping.
+    fn runoff_pass(&mut self) {
+        let pat = self.params.patterns;
+        if pat <= 0.0 {
+            return;
+        }
+        let n = self.grid.cells();
+        let mut inflow = vec![0.0f64; n];
+        for k in 0..self.drop_order.len() {
+            let i = self.drop_order[k] as usize;
+            let m = (self.moisture + self.rain_shift(i)).clamp(0.0, 1.0);
+            let arid = ((0.55 - m) / 0.35).clamp(0.0, 1.0) * pat;
+            let r = self.downhill[i];
+            if arid <= 0.0 && inflow[i] == 0.0 {
+                self.runoff[i] = 0.0;
+                continue;
+            }
+            let slope = if r == u32::MAX {
+                0.0
+            } else {
+                ((self.elevation(i) - self.elevation(r as usize)) as f64 / 0.6).clamp(0.0, 1.0)
+            };
+            let (shed, absorb) = if self.channel[i] {
+                (0.0, 1.0)
+            } else {
+                match self.state[i] {
+                    Cell::Bare => (0.5, 0.2),
+                    Cell::Grass => (0.15, 0.6),
+                    Cell::Tree => (0.05, 0.85),
+                }
+            };
+            let generated = arid * slope * shed;
+            let total = inflow[i] + generated;
+            let soaked = total * absorb;
+            self.runoff[i] = (RUNOFF_GAIN * (soaked - generated)) as f32;
+            if r != u32::MAX {
+                inflow[r as usize] += total - soaked;
+            }
         }
     }
 
@@ -2178,6 +2507,13 @@ impl World {
         self.river_dist.fill(u16::MAX);
         self.river_reach.fill(0.0);
         self.river_water.fill(0.0);
+        // Lakes are open water whatever the rivers do.
+        for i in 0..n {
+            if self.terrain.lake[i] {
+                self.channel[i] = true;
+                self.state[i] = Cell::Bare;
+            }
+        }
         if r <= 0.0 {
             return;
         }
@@ -2350,7 +2686,7 @@ impl World {
     pub fn age(&self, index: usize, tick: u64) -> u64 {
         match self.state[index] {
             Cell::Bare => 0,
-            _ => tick.saturating_sub(self.born[index]),
+            _ => tick.saturating_sub(self.born[index]) + if self.is_elder(index) { ELDER_AGE } else { 0 },
         }
     }
 
@@ -2369,6 +2705,21 @@ impl World {
     fn maturity_age(&self, index: usize) -> u64 {
         (self.params.tree_maturity_age as f64 * self.species(index).traits().maturity) as u64
             + self.browse_scar[index] as u64 * BROWSE_SETBACK
+    }
+
+    /// A veteran: one of the rare trees that, once past twice its maturity
+    /// age, escapes most background mortality and grows to great age and
+    /// size (with `patterns`; the great tree always is one).
+    pub fn is_veteran(&self, index: usize, tick: u64) -> bool {
+        if self.state[index] != Cell::Tree {
+            return false;
+        }
+        if self.is_elder(index) {
+            return true;
+        }
+        self.params.patterns > 0.0
+            && self.age(index, tick) >= 2 * self.maturity_age(index)
+            && rng::uniform01(self.seed, index as u32, self.born[index], Stream::Veteran) < VETERAN_P
     }
 
     fn is_mature(&self, index: usize, tick: u64) -> bool {
@@ -2398,7 +2749,7 @@ impl World {
 
     /// Brush stroke choosing the grass kind (the panel's grass picker).
     pub fn paint_grass(&mut self, index: usize, kind: GrassKind, tick: u64) {
-        if self.channel[index] || self.built[index] != 0 {
+        if self.channel[index] || self.built[index] != 0 || self.terrain.ice[index] {
             return;
         }
         self.plant_grass(index, kind, tick);
@@ -2460,7 +2811,7 @@ impl World {
 
     /// Brush stroke choosing the tree species (the panel's species picker).
     pub fn paint_species(&mut self, index: usize, brush: Brush, sp: Species, tick: u64) {
-        if (self.channel[index] || self.built[index] != 0) && matches!(brush, Brush::Tree | Brush::Grass) {
+        if (self.channel[index] || self.built[index] != 0 || self.terrain.ice[index]) && matches!(brush, Brush::Tree | Brush::Grass) {
             return; // nothing roots in open water or under a house
         }
         if brush == Brush::Tree {
@@ -2610,6 +2961,7 @@ impl World {
                             }
                         }
                     }
+                    let norm = self.kernel_norm;
                     for k in 0..self.range_disk.len() {
                         let (dq, dr, d) = self.range_disk[k];
                         if let Some(j) = self.grid.axial_to_index(q + dq, r + dr) {
@@ -2618,7 +2970,7 @@ impl World {
                                 // casts proportionally more seed, so its genes
                                 // weigh more in the local seed mix.
                                 let g = self.genome[i];
-                                let kw = kernel_weight(d) as f32 * g[0] * fecund;
+                                let kw = kernel_weight_clumped(d, self.params.patterns) as f32 * norm * g[0] * fecund;
                                 self.seed_rain[j][sp] += kw;
                                 self.gene_rain[j][sp][0] += kw * g[0];
                                 self.gene_rain[j][sp][1] += kw * g[1];
@@ -3040,7 +3392,10 @@ impl World {
             let light = self.canopy_light(t);
             // Germination scales with the global establishment knob (so
             // tree_growth_p = 0 truly freezes recruitment).
-            let germ = LDD_GERMINATION * scale * self.tree_establishment(t, k, light);
+            let mut germ = LDD_GERMINATION * scale * self.tree_establishment(t, k, light);
+            if self.adults_near[t].iter().all(|&a| a == 0) {
+                germ *= 1.0 - ISOLATION_PENALTY * self.params.patterns;
+            }
             if rng::uniform01(self.seed, t as u32 + 104_729, tick, Stream::Jay) >= germ {
                 continue;
             }
@@ -3111,6 +3466,26 @@ impl World {
                             ) < spread
                         {
                             infect.push(j);
+                        }
+                    }
+                }
+                // Bark beetles fly to the next stand over, favoring
+                // weakened hosts — outbreaks run as waves across a forest.
+                if self.params.patterns > 0.0 && SPECIES_TABLE[sp].beetle > 0.0 {
+                    for (n, &(dq, dr, d)) in self.near_disk.iter().enumerate() {
+                        if d != 2 {
+                            continue;
+                        }
+                        if let Some(j) = self.grid.axial_to_index(q + dq, r + dr) {
+                            let weak = 0.5 + (1.0 - self.reserve[j] as f64);
+                            if self.state[j] == Cell::Tree
+                                && self.species[j] as usize == sp
+                                && self.pest[j] == 0
+                                && rng::uniform01(self.seed, j as u32 + (n as u32 + 9) * self.grid.cells() as u32, tick, Stream::Pest)
+                                    < spread * BEETLE_FLIGHT * self.params.patterns * weak
+                            {
+                                infect.push(j);
+                            }
                         }
                     }
                 }
@@ -3221,7 +3596,13 @@ impl World {
             }
             let pal = self.species(i).traits().palatability;
             let riparian = 1.0 + RIPARIAN_BROWSE * self.params.rivers * self.water_table(i) as f64;
-            let p = self.params.browse * BROWSE_P * pal * riparian;
+            // With fauna, browsing follows the herds — and wolves keep them
+            // moving, sparing the saplings where packs roam.
+            let f = self.params.fauna * HERD_SHARE;
+            let herds = self.fauna.pressure[i] as f64;
+            let fear = self.fauna.fear[i] as f64;
+            let animals = (1.0 - f) + f * (0.3 + 2.0 * herds) * (1.0 - 0.8 * fear);
+            let p = self.params.browse * BROWSE_P * pal * riparian * animals;
             if rng::uniform01(self.seed, i as u32, tick, Stream::Browse) >= p {
                 continue;
             }
@@ -3251,7 +3632,11 @@ impl World {
                     let spread =
                         (p.fire_spread_p * (0.4 + 1.2 * (1.0 - self.moisture)) * damp).min(1.0);
                     let flam = if self.state[j] == Cell::Grass {
-                        self.gmul(self.grass_kind(j).traits().flammability)
+                        // Fuel builds with time since the last burn: young
+                        // regrowth carries little fire, so burns leave a
+                        // mosaic of patches of different ages.
+                        let fuel = (self.age(j, tick) as f64 / FUEL_YEARS).min(1.0);
+                        self.gmul(self.grass_kind(j).traits().flammability) * (1.0 - p.patterns * (1.0 - fuel))
                     } else {
                         1.0
                     };
@@ -3464,6 +3849,14 @@ impl World {
                 parts[DeathCause::Crowding as usize] += h - hazard;
                 hazard = h;
             }
+            if is_tree && self.is_veteran(i, tick) {
+                // Veterans escape most of the background hazard.
+                let spare = 1.0 - VETERAN_SPARE * self.params.patterns;
+                hazard *= spare;
+                for v in parts.iter_mut() {
+                    *v *= spare;
+                }
+            }
             if rng::uniform01(self.seed, i as u32, tick, Stream::Mortality) < hazard
                 && !self.try_resprout(i, tick)
             {
@@ -3667,8 +4060,12 @@ impl World {
             if w < 0.42 { Biome::Grassland } else { Biome::TemperateForest }
         } else if w < 0.25 {
             Biome::Desert
-        } else {
+        } else if w < 0.62 {
             Biome::Savanna
+        } else {
+            // Warm and wet is forest, not savanna (Whittaker): the warm-
+            // temperate rainforest of a windward coast.
+            Biome::TemperateForest
         }
     }
 
@@ -3719,9 +4116,23 @@ impl World {
         let pct = |v: f64| format!("{:.0}%", 100.0 * v);
         let mut out = Vec::new();
         let (q, r) = self.grid.index_to_axial(i);
-        out.push(format!("Tile ({q}, {r})"));
-        if self.channel[i] {
+        match self.region_name(i) {
+            Some(name) => out.push(format!("Tile ({q}, {r}) · {name}")),
+            None => out.push(format!("Tile ({q}, {r})")),
+        }
+        for (_, tile, name) in self.landmarks() {
+            let (lq, lr) = self.grid.index_to_axial(tile);
+            if hex::distance(q, r, lq, lr) <= 3 {
+                out.push(format!("Landmark: {name}"));
+            }
+        }
+        if self.terrain.lake[i] {
+            out.push("Lake water — nothing roots here".to_string());
+        } else if self.channel[i] {
             out.push("Open river water — nothing roots here".to_string());
+        }
+        if self.terrain.ice[i] {
+            out.push("Glacier ice — nothing roots here".to_string());
         }
         if self.built[i] != 0 {
             out.push("A house stands here — nothing grows on its floor".to_string());
@@ -4013,6 +4424,14 @@ impl World {
         }
         // Established roots drink first on dry ground.
         pk /= 1.0 + c.root_stress * tr.drought_sensitivity;
+        // Stress-gradient facilitation: where the climate is harsh (dry or
+        // cold), a seedling beside established adults survives far better
+        // — so stands advance as fronts instead of scattering.
+        if p.patterns > 0.0 {
+            let harsh = ((1.0 - c.water_base) / 0.7).clamp(0.0, 1.0).max(((0.35 - c.temp) / 0.25).clamp(0.0, 1.0));
+            let shelter = (c.adults as f64 / 3.0).min(1.0);
+            pk *= 1.0 + p.patterns * EDGE_FACILITATION * harsh * shelter;
+        }
         pk
     }
 
@@ -4026,6 +4445,7 @@ impl World {
                 || self.remains_code[i] != 0
                 || self.channel[i]
                 || self.built[i] != 0
+                || self.terrain.ice[i]
             {
                 continue;
             }
@@ -4100,6 +4520,7 @@ impl World {
                         // Scales with the grass-spread knob, so zero spread
                         // truly freezes grass.
                         niches * ANNUAL_SEED_P * (p.grass_clonal_p / GRASS_CLONAL_P).min(1.0)
+                            * (1.0 + p.events * SUPERBLOOM_GERMINATION * (self.bloom[i] > 0) as u8 as f64)
                             * self.seed_bank[i] as f64
                     } else {
                         0.0
@@ -4188,7 +4609,9 @@ impl World {
         self.weather_pass(tick);
         self.snow_pass();
         self.flood_pass(tick);
+        self.runoff_pass();
         self.rebuild_fields(tick);
+        self.fauna_pass(tick);
         self.root_pass(tick);
         self.dispersal_pass(tick);
         self.pest_pass(tick);
@@ -4197,6 +4620,126 @@ impl World {
         self.fire_pass(tick);
         self.death_pass(tick);
         self.growth_pass(tick);
+        self.auto_plant_pass(tick);
+        self.events_pass(tick);
+    }
+
+    /// Auto-planting: at a fixed rate, set down a random plant (tree or
+    /// grass, any kind in the current pool) on a random open tile — bare
+    /// ground, no water, ice, house, or standing husk.
+    fn auto_plant_pass(&mut self, tick: u64) {
+        let rate = self.params.auto_plant;
+        if rate <= 0.0 {
+            return;
+        }
+        // A fixed schedule: the plantings owed by this tick, minus those
+        // owed by the last.
+        let due = |t: u64| (t as f64 * rate).floor() as u64;
+        let count = due(tick) - due(tick.saturating_sub(1));
+        let n = self.grid.cells() as u64;
+        let biomes = self.params.biomes > 0.0;
+        let trees = if biomes { SPECIES_COUNT } else { BASE_SPECIES } as u64;
+        let grasses = if biomes { GRASS_KIND_COUNT } else { BASE_GRASS_KINDS } as u64;
+        for k in 0..count {
+            for attempt in 0..AUTO_PLANT_TRIES {
+                let key = (k * AUTO_PLANT_TRIES as u64 + attempt as u64) as u32;
+                let i = (rng::hash(self.seed, key, tick, Stream::AutoPlant) % n) as usize;
+                if self.state[i] != Cell::Bare
+                    || self.channel[i]
+                    || self.terrain.ice[i]
+                    || self.built[i] != 0
+                    || self.remains_code[i] != 0
+                    || self.burn[i] > 0
+                {
+                    continue;
+                }
+                let pick = rng::hash(self.seed, key ^ 0x5eed, tick, Stream::AutoPlant);
+                if pick % 2 == 0 {
+                    self.plant_tree(i, Species::from_u8(((pick >> 1) % trees) as u8), tick);
+                } else {
+                    self.plant_grass(i, GrassKind::from_u8(((pick >> 1) % grasses) as u8), tick);
+                }
+                break;
+            }
+        }
+    }
+
+    /// Herds graze and trek, packs hunt (see `fauna`).
+    fn fauna_pass(&mut self, tick: u64) {
+        if self.params.fauna <= 0.0 {
+            return;
+        }
+        let mut fauna = std::mem::take(&mut self.fauna);
+        fauna.step(self, self.seed, tick);
+        self.fauna = fauna;
+    }
+
+    /// The herds and packs.
+    pub fn fauna(&self) -> &Fauna {
+        &self.fauna
+    }
+
+    /// Desert blooms, and the landscape-event record.
+    fn events_pass(&mut self, tick: u64) {
+        let n = self.grid.cells();
+        let mut fresh = 0usize;
+        let mut fresh_at = None;
+        for i in 0..n {
+            if self.bloom[i] > 0 {
+                self.bloom[i] -= 1;
+            }
+            // A soaking rain (wet was set this tick) on arid open ground
+            // wakes the ephemerals.
+            if self.params.events > 0.0
+                && self.wet[i] == WET_TICKS
+                && self.state[i] != Cell::Tree
+                && !self.channel[i]
+                && self.desert_like(i)
+            {
+                self.bloom[i] = BLOOM_TICKS;
+                fresh += 1;
+                fresh_at = Some(i);
+            }
+        }
+        let record = |w: &mut World, e: BiomeEvent, on: bool, at: Option<usize>| {
+            let k = e as usize;
+            if on && !w.event_active[k] {
+                w.biome_events[k] += 1;
+                w.biome_event_at[k] = at.map(|i| (i, tick));
+            }
+            w.event_active[k] = on;
+        };
+        record(self, BiomeEvent::Superbloom, fresh >= (n / 2000).max(8), fresh_at);
+        let burning = self.burning_count();
+        let fire_at = (0..n).find(|&i| self.burn[i] > 0);
+        record(self, BiomeEvent::Wildfire, burning >= WILDFIRE_TILES, fire_at);
+        let beetles: Vec<usize> = (0..n)
+            .filter(|&i| self.state[i] == Cell::Tree && self.pest[i] > 0 && self.species(i).traits().beetle > 0.0)
+            .collect();
+        record(self, BiomeEvent::BeetleWave, beetles.len() as u32 >= BEETLE_WAVE_TREES, beetles.get(beetles.len() / 2).copied());
+        let flood_at = (0..n).find(|&i| self.inundated(i));
+        record(self, BiomeEvent::Flood, self.is_flooding(), flood_at);
+    }
+
+    /// Arid ground: dry regional climate (the deserts and dry scrub).
+    fn desert_like(&self, i: usize) -> bool {
+        let m = (0.5 + self.rain_shift(i)).clamp(0.0, 1.0);
+        m < 0.32 && self.temperature(i) > 0.45
+    }
+
+    /// Desert bloom on a tile, 0..1 (fading over the season).
+    pub fn bloom(&self, i: usize) -> f32 {
+        self.bloom[i] as f32 / BLOOM_TICKS as f32
+    }
+
+    /// Landscape events so far (BiomeEvent order).
+    pub fn biome_events(&self) -> [u32; BIOME_EVENT_COUNT] {
+        self.biome_events
+    }
+
+    /// Where and when the latest event of a kind happened.
+    pub fn biome_event_at(&self, e: BiomeEvent) -> Option<(usize, u64)> {
+        self.biome_event_at[e as usize]
     }
 }
 
@@ -4741,6 +5284,11 @@ mod tests {
             seasons: f64::NEG_INFINITY,
             cloud_dynamics: -3.0,
             biomes: 2.0,
+            patterns: -1.0,
+            map_design: f64::NAN,
+            events: 3.0,
+            fauna: f64::INFINITY,
+            auto_plant: -5.0,
             seed_tree_p: f64::NAN,
             seed_grass_p: 0.5,
             width: 3,
@@ -4755,6 +5303,8 @@ mod tests {
         assert_eq!((p.physiology, p.seasons), (1.0, SEASONS));
         assert_eq!(p.cloud_dynamics, 0.0);
         assert_eq!(p.biomes, 1.0);
+        assert_eq!((p.patterns, p.map_design, p.events, p.fauna), (0.0, 1.0, 1.0, 1.0));
+        assert_eq!(p.auto_plant, 0.0);
         assert_eq!(p.grass_seed_p, 1.0);
         assert_eq!(p.grass_clonal_p, 0.0);
         assert_eq!(p.shade_strength, 1.0);
@@ -6393,5 +6943,188 @@ mod tests {
         }
         w.demolish(i);
         assert!(!w.is_built(i));
+    }
+
+    #[test]
+    fn veterans_are_rare_and_only_with_patterns() {
+        let count = |patterns: f64| {
+            let mut w = bare_world(21, Params { patterns, ..no_fire() });
+            for i in 0..CELLS {
+                w.paint(i, Brush::Tree, 0);
+            }
+            (0..CELLS).filter(|&i| w.is_veteran(i, 1000)).count()
+        };
+        assert_eq!(count(0.0), 0);
+        let v = count(1.0) as f64 / CELLS as f64;
+        assert!((VETERAN_P * 0.6..VETERAN_P * 1.4).contains(&v), "veteran share {v:.3}");
+    }
+
+    #[test]
+    fn a_clumped_seed_shadow_keeps_its_total() {
+        let mut w = bare_world(22, Params { patterns: 1.0, ..no_fire() });
+        let mass = |p: f64| (1..=w.params.tree_range).map(|d| 6.0 * d as f64 * kernel_weight_clumped(d, p)).sum::<f64>();
+        let norm = w.seed_shadow_norm() as f64;
+        assert!((mass(1.0) * norm - mass(0.0)).abs() < 1e-4);
+        assert!(kernel_weight_clumped(3, 1.0) < kernel_weight_clumped(3, 0.0), "the tail is steeper");
+        w.set_params(Params { patterns: 0.0, ..w.params });
+        assert_eq!(w.kernel_norm, 1.0);
+    }
+
+    #[test]
+    fn runoff_drains_bare_slopes_and_waters_the_plants_below() {
+        let mut w = bare_world(23, Params { patterns: 1.0, terrain: 1.0, ..no_fire() });
+        w.moisture = 0.1; // an arid year
+        // A steep step: bare above, grass below.
+        let (b, t) = (0..CELLS)
+            .filter_map(|i| {
+                let r = w.downhill[i];
+                (r != u32::MAX).then(|| (i, r as usize))
+            })
+            .max_by(|a, b| {
+                let d = |(i, r): (usize, usize)| w.elevation(i) - w.elevation(r);
+                d(*a).partial_cmp(&d(*b)).unwrap()
+            })
+            .unwrap();
+        w.paint(t, Brush::Grass, 0);
+        let before = (w.tile_water(b), w.tile_water(t));
+        w.runoff_pass();
+        assert!(w.runoff[t] > 0.0, "the grass below catches the runoff");
+        assert!(w.runoff[b] < 0.0, "the bare crust above sheds it");
+        assert!(w.tile_water(t) > before.1 && w.tile_water(b) < before.0);
+        // Nothing moves without patterns, or in a wet year.
+        let mut wet = bare_world(23, Params { patterns: 1.0, terrain: 1.0, ..no_fire() });
+        wet.moisture = 0.9;
+        wet.runoff_pass();
+        assert!(wet.runoff.iter().all(|&r| r.abs() < 1e-3));
+    }
+
+    #[test]
+    fn young_regrowth_carries_little_fire() {
+        // A burning tile ringed by grass of a given age: how often does
+        // the fire jump?
+        let catches = |age: u64| {
+            let mut n = 0;
+            for seed in 0..60u64 {
+                let mut w = bare_world(seed, Params { patterns: 1.0, fire_spread_p: 0.6, ..no_fire() });
+                let c = G.middle();
+                let (q, r) = G.index_to_axial(c);
+                let tick = 100;
+                for (dq, dr) in hex::NEIGHBORS {
+                    w.paint(G.axial_to_index(q + dq, r + dr).unwrap(), Brush::Grass, tick - age);
+                }
+                w.paint(c, Brush::Grass, 0);
+                w.paint(c, Brush::Fire, 0);
+                w.fire_pass(tick);
+                n += (0..CELLS).filter(|&i| w.burn[i] > 0).count() - 1;
+            }
+            n
+        };
+        let (young, old) = (catches(1), catches(10));
+        assert!(young * 2 < old, "young grass {young} vs old {old}");
+    }
+
+    #[test]
+    fn a_soaking_rain_wakes_the_desert_ephemerals() {
+        let mut w = bare_world(24, Params { events: 1.0, biomes: 1.0, ..no_fire() });
+        let i = (0..CELLS).find(|&i| w.desert_like(i));
+        // The legacy map has no desert climate: force the climate dry.
+        let i = i.unwrap_or_else(|| {
+            w.params.climate_zones = 0.0;
+            0
+        });
+        if w.desert_like(i) {
+            w.wet[i] = WET_TICKS;
+            w.events_pass(1);
+            assert!(w.bloom(i) > 0.9);
+            for t in 2..6 {
+                w.events_pass(t);
+            }
+            assert_eq!(w.bloom(i), 0.0, "the bloom passes with the season");
+        }
+        let mut off = bare_world(24, Params { events: 0.0, ..no_fire() });
+        off.wet[0] = WET_TICKS;
+        off.events_pass(1);
+        assert_eq!(off.bloom(0), 0.0);
+    }
+
+    #[test]
+    fn the_designed_map_sites_named_landmarks_and_an_ancient_tree() {
+        let w = World::with_params(9, Params { width: 160, height: 120, ..Params::default() });
+        let marks = w.landmarks();
+        let kinds: Vec<LandmarkKind> = marks.iter().map(|m| m.0).collect();
+        assert!(kinds.contains(&LandmarkKind::CraterLake) && kinds.contains(&LandmarkKind::Oasis), "{kinds:?}");
+        assert!(marks.iter().all(|m| !m.2.is_empty()));
+        let (_, tree, _) = *marks.iter().find(|m| m.0 == LandmarkKind::GreatTree).expect("a great tree");
+        assert_eq!(w.state(tree), Cell::Tree);
+        assert!(w.age(tree, 0) >= ELDER_AGE && w.is_veteran(tree, 0));
+        // Lakes are open water; nothing roots on ice.
+        let lake = (0..w.grid().cells()).find(|&i| w.is_lake(i)).unwrap();
+        assert!(w.is_channel(lake));
+        assert!(w.regions().len() >= 5, "named regions: {}", w.regions().len());
+        assert!(w.region_name(w.grid().middle()).is_some() || !w.regions().is_empty());
+        // Without design: no landmarks, no lakes.
+        let plain = World::with_params(9, Params { width: 160, height: 120, map_design: 0.0, ..Params::default() });
+        assert!(plain.landmarks().is_empty());
+        assert!(!(0..plain.grid().cells()).any(|i| plain.is_lake(i)));
+    }
+
+    #[test]
+    fn herds_arrive_with_the_grass_and_wolves_follow_the_herds() {
+        let mut w = World::with_params(
+            25,
+            Params { width: 96, height: 96, seed_grass_p: 0.5, seed_tree_p: 0.01, fauna: 1.0, ..Params::default() },
+        );
+        let mut herds_seen = 0;
+        let mut packs_seen = 0;
+        for t in 1..=600 {
+            w.step(t);
+            herds_seen = herds_seen.max(w.fauna().herds.len());
+            packs_seen = packs_seen.max(w.fauna().packs.len());
+        }
+        assert!(herds_seen >= 1, "grazers arrive once there is grass");
+        assert!(packs_seen >= 1, "wolves follow the herds");
+        // Grazing follows the herds: pressure is highest where they are.
+        if let Some(h) = w.fauna().herds.first() {
+            let at = w.grid().pick(h.pos[0], h.pos[1]).unwrap();
+            assert!(w.fauna().pressure[at] > 0.0);
+        }
+        let none = World::with_params(25, Params { width: 96, height: 96, seed_grass_p: 0.5, fauna: 0.0, ..Params::default() });
+        assert!(none.fauna().herds.is_empty());
+    }
+
+    #[test]
+    fn auto_planting_sets_down_random_plants_at_a_fixed_rate() {
+        let mut w = bare_world(31, Params { auto_plant: 0.5, ..trees_only() });
+        // 0.5 per tick: exactly one planting every second tick.
+        let mut planted = 0;
+        for t in 1..=200u64 {
+            let before = w.counts()[1] + w.counts()[2];
+            w.auto_plant_pass(t);
+            let added = w.counts()[1] + w.counts()[2] - before;
+            assert_eq!(added, (t % 2 == 0) as u32, "tick {t}");
+            planted += added;
+        }
+        assert_eq!(planted, 100);
+        let [_, grass, trees] = w.counts();
+        assert!(grass > 25 && trees > 25, "both trees ({trees}) and grass ({grass})");
+        // Several kinds of each, spread over the map.
+        let kinds: std::collections::HashSet<u8> = (0..CELLS).filter(|&i| w.state(i) == Cell::Tree).map(|i| w.species[i]).collect();
+        assert!(kinds.len() >= 3, "species {kinds:?}");
+        let rows: std::collections::HashSet<i32> =
+            (0..CELLS).filter(|&i| w.state(i) != Cell::Bare).map(|i| i as i32 / G.width).collect();
+        assert!(rows.len() > 30, "scattered across the map");
+        // Off means off, and plants are only ever set on open ground.
+        let mut off = bare_world(31, trees_only());
+        for t in 1..=50 {
+            off.auto_plant_pass(t);
+        }
+        assert_eq!(off.counts()[0] as usize, CELLS);
+        let mut busy = bare_world(32, Params { auto_plant: 20.0, ..trees_only() });
+        busy.paint(5, Brush::Tree, 0);
+        let sp = busy.species[5];
+        for t in 1..=30 {
+            busy.auto_plant_pass(t);
+        }
+        assert_eq!(busy.species[5], sp, "an existing plant is never replaced");
     }
 }

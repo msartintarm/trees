@@ -51,6 +51,14 @@ pub enum Stream {
     Browse = 20,
     /// River flood pulses.
     Flood = 21,
+    /// Which trees become long-lived veterans.
+    Veteran = 22,
+    /// Animal herds and packs.
+    Fauna = 23,
+    /// Place names and landmark siting.
+    Places = 24,
+    /// Auto-planting: where, and what.
+    AutoPlant = 25,
 }
 
 #[inline]

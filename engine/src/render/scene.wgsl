@@ -53,6 +53,8 @@ struct Globals {
     cam_up: vec4<f32>,
     // Regional color grade (rgb multiplier) and exposure (w).
     grade: vec4<f32>,
+    // The inspected tile: center (xy), on (z, 0/1).
+    select: vec4<f32>,
 };
 
 @group(0) @binding(0) var<uniform> globals: Globals;
@@ -228,13 +230,30 @@ fn vs_particle(in: VsIn) -> VsOut {
     } else if (kind < 2.5) {
         p = p + vec3<f32>(sin(t * 0.43 + ph), cos(t * 0.37 + ph * 1.3), 0.4 * sin(t * 0.61 + ph * 0.7)) * 0.7;
         fade = pow(max(sin(t * 2.3 + ph * 3.1), 0.0), 3.0);
-    } else {
+    } else if (kind < 3.5) {
         let f = fract(t * 0.11 + in.gloss);
         let spin = t * 2.5 + ph;
         p = p + vec3<f32>(0.35 * sin(spin) + wind.x * f * 3.0, 0.35 * cos(spin) + wind.y * f * 3.0, 0.8 - 2.0 * f);
         fade = sin(3.14159 * f);
+    } else if (kind < 4.5) {
+        // Birds wheel over their patch, wings beating.
+        let a = t * (0.5 + 0.3 * in.gloss) + ph;
+        let r = 2.0 + 2.5 * in.gloss;
+        p = p + vec3<f32>(r * cos(a), r * sin(a), 0.4 * sin(t * 1.1 + ph));
+        fade = 1.0;
+    } else {
+        // Spray rises from the falls and drifts away.
+        let f = fract(t * 0.3 + in.gloss);
+        p = p + vec3<f32>(wind.xy * f * 1.5 + vec2<f32>(sin(ph), cos(ph)) * 0.3 * f, 2.2 * f);
+        fade = sin(3.14159 * f) * 0.7;
     }
-    let world = p + in.pos * in.scale;
+    var shape = in.pos;
+    if (kind > 3.5 && kind < 4.5) {
+        // A flattened, flapping silhouette: long wings, thin body.
+        let flap = 0.35 + abs(sin(t * 12.0 + ph * 20.0));
+        shape = vec3<f32>(in.pos.x * 0.6, in.pos.y * 2.2, in.pos.z * 0.3 + in.pos.y * in.pos.y * 0.6 * (flap - 0.7));
+    }
+    let world = p + shape * in.scale;
     var out: VsOut;
     out.clip = globals.view_proj * vec4<f32>(world, 1.0);
     out.color = in.icolor;
@@ -245,6 +264,84 @@ fn vs_particle(in: VsIn) -> VsOut {
     out.tau = fade;
     out.info = vec4<f32>(kind, 0.0, 0.0, 0.0);
     return out;
+}
+
+// Animals: the mesh faces +x and turns to the instance's heading (lean);
+// legs swing and the body bobs with the gait (slim = gait phase).
+fn animal_world(in: VsIn) -> vec3<f32> {
+    let s = in.scale;
+    var d = in.lean;
+    if (length(d) < 1e-3) {
+        d = vec2<f32>(1.0, 0.0);
+    } else {
+        d = normalize(d);
+    }
+    let t = globals.eye.w * 5.0 + in.slim * 40.0;
+    var p = in.pos;
+    // Legs: the low parts swing fore and aft, front and hind pairs opposed.
+    let leg = select(0.0, 1.0, p.z < 0.19 && abs(p.y) > 0.012);
+    let side = select(-1.0, 1.0, p.x * p.y > 0.0);
+    p.x = p.x + leg * side * 0.03 * sin(t) * (0.19 - p.z) / 0.19;
+    p.z = p.z + (1.0 - leg) * 0.008 * abs(sin(t));
+    let x = p.x * d.x - p.y * d.y;
+    let y = p.x * d.y + p.y * d.x;
+    return vec3<f32>(x * s, y * s, p.z * s) + in.ipos;
+}
+
+@vertex
+fn vs_animal(in: VsIn) -> VsOut {
+    let world = animal_world(in);
+    var out: VsOut;
+    out.clip = globals.view_proj * vec4<f32>(world, 1.0);
+    let w = min(in.vweight, 1.0);
+    out.color = mix(in.icolor, in.vcolor, w);
+    var d = in.lean;
+    if (length(d) < 1e-3) {
+        d = vec2<f32>(1.0, 0.0);
+    } else {
+        d = normalize(d);
+    }
+    out.normal = vec3<f32>(in.normal.x * d.x - in.normal.y * d.y, in.normal.x * d.y + in.normal.y * d.x, in.normal.z);
+    out.world = world;
+    out.mat_w = w;
+    out.local = vec3<f32>(0.0);
+    out.tau = 0.0;
+    out.info = vec4<f32>(-1.0, 0.0, 0.0, 1.0);
+    return out;
+}
+
+@vertex
+fn vs_animal_shadow(in: VsIn) -> @builtin(position) vec4<f32> {
+    return globals.shadow_vp * vec4<f32>(animal_world(in), 1.0);
+}
+
+// Flames: tongues that flicker in height and sway (gloss = phase).
+@vertex
+fn vs_flame(in: VsIn) -> VsOut {
+    let t = globals.eye.w;
+    let ph = in.gloss * 37.0;
+    let flick = 0.75 + 0.3 * sin(t * 11.0 + ph + in.pos.x * 9.0) + 0.15 * sin(t * 23.0 + ph * 1.7);
+    let h = in.pos.z * flick;
+    let sway = vec2<f32>(sin(t * 7.0 + ph), cos(t * 5.0 + ph)) * 0.06 * h + globals.wind.xy * globals.wind.z * 0.25 * h;
+    let world = vec3<f32>(in.pos.x * in.scale + sway.x, in.pos.y * in.scale + sway.y, h * in.scale) + in.ipos;
+    var out: VsOut;
+    out.clip = globals.view_proj * vec4<f32>(world, 1.0);
+    out.color = in.icolor;
+    out.normal = in.normal;
+    out.world = world;
+    out.mat_w = 0.0;
+    out.local = vec3<f32>(in.pos.xy, in.pos.z / 0.75);
+    out.tau = 1.0;
+    out.info = vec4<f32>(-1.0, 0.0, 0.0, 0.0);
+    return out;
+}
+
+@fragment
+fn fs_flame(in: VsOut) -> @location(0) vec4<f32> {
+    // Hot white-yellow at the root, red and fading at the tips.
+    let up = clamp(in.local.z, 0.0, 1.0);
+    let col = mix(in.color * 1.3, vec3<f32>(1.6, 0.35, 0.08), up);
+    return vec4<f32>(col, 0.85 * (1.0 - up * up));
 }
 
 // Depth-only pass rendered from the key light for a shadow cascade.
@@ -633,9 +730,10 @@ fn mat_height(m: i32, p: vec2<f32>) -> f32 {
             return mix(fbm2(p * 1.6) * 0.6, 0.25, puddle);
         }
         case 1: {
-            // Tundra: frost-heave polygons with raised rims.
-            let c = cells(p * 0.55);
-            return (1.0 - smoothstep(0.0, 0.16, c.y)) * 0.8 + vnoise(p * 3.0) * 0.2;
+            // Tundra: frost-heave polygons with low raised rims, softened
+            // by hummocks so they read as ground, not paving.
+            let c = cells(p * 0.55 + vec2<f32>(vnoise(p * 0.8), vnoise(p * 0.8 + 3.1)) * 0.6);
+            return (1.0 - smoothstep(0.0, 0.2, c.y)) * 0.35 + fbm2(p * 1.6) * 0.5;
         }
         case 2: {
             // Boreal floor: lumpy moss cushions.
@@ -665,9 +763,9 @@ fn mat_height(m: i32, p: vec2<f32>) -> f32 {
             return r * 0.6 + vnoise(p * 0.4) * 0.2;
         }
         default: {
-            // Rock: faceted blocks with deep joints.
-            let c = cells(p * 0.9);
-            return c.z * 0.6 + smoothstep(0.0, 0.12, c.y) * 0.6;
+            // Rock: weathered blocks with joints, broken up by noise.
+            let c = cells(p * 0.9 + vec2<f32>(vnoise(p * 1.3), vnoise(p * 1.3 + 7.0)) * 0.5);
+            return c.z * 0.3 + smoothstep(0.0, 0.12, c.y) * 0.4 + fbm2(p * 2.0) * 0.3;
         }
     }
 }
@@ -690,7 +788,7 @@ fn mat_tint(m: i32, p: vec2<f32>, h: f32) -> vec3<f32> {
             let l = vnoise(p * 2.5);
             let orange = step(0.8, l);
             let pale = step(l, 0.2);
-            return mix(mix(vec3<f32>(0.95, 0.93, 0.9), vec3<f32>(1.4, 0.9, 0.5), orange), vec3<f32>(0.95, 1.15, 0.95), pale) * (0.85 + 0.3 * h);
+            return mix(mix(vec3<f32>(0.97, 0.95, 0.92), vec3<f32>(1.25, 0.95, 0.65), orange), vec3<f32>(0.97, 1.08, 0.97), pale) * (0.94 + 0.12 * h);
         }
         case 2: {
             let moss = smoothstep(0.35, 0.65, h);
@@ -711,8 +809,8 @@ fn mat_tint(m: i32, p: vec2<f32>, h: f32) -> vec3<f32> {
             return vec3<f32>(1.45, 1.25, 0.95) * (0.92 + 0.16 * h);
         }
         default: {
-            // Rock strata: bands by height, lighter on block faces.
-            return vec3<f32>(1.0, 0.97, 0.94) * (0.8 + 0.35 * h);
+            // Rock: lighter on block faces, a little.
+            return vec3<f32>(1.0, 0.97, 0.94) * (0.92 + 0.14 * h);
         }
     }
 }
@@ -788,12 +886,14 @@ fn terrain_color(in: TerrainOut) -> vec3<f32> {
     var spec = mix(a.spec, b.spec, t);
     // Grass cover softens the bump into a sward.
     grad = grad * (1.0 - 0.5 * in.cover.x);
-    var base = in.color * mix(vec3<f32>(1.0), tint, mix(0.55, 0.85, detail) * (1.0 - 0.6 * in.cover.x));
+    // The biome palette is in the vertex color; materials add their
+    // texture on top, more strongly up close.
+    var base = in.color * mix(vec3<f32>(1.0), tint, mix(0.3, 0.55, detail) * (1.0 - 0.6 * in.cover.x));
 
     // Drought cracks on parched open ground (gloss < 0).
     let parched = max(-in.ground.w, 0.0) * clamp(n.z, 0.0, 1.0);
     let cr = cells(p * 1.3);
-    base = base * (1.0 - parched * (1.0 - smoothstep(0.02, 0.07, cr.y)) * 0.5);
+    base = base * (1.0 - parched * (1.0 - smoothstep(0.015, 0.045, cr.y)) * 0.3 * detail);
 
     // Snow: smooth drifts over the ground's relief, with sparkle.
     let snow = clamp(in.ground.x, 0.0, 1.0);
@@ -842,32 +942,48 @@ fn terrain_color(in: TerrainOut) -> vec3<f32> {
     col = col + in.color * in.cover.y * 0.8;
 
     // The hex grid overlay (a toggle): thin lines on tile edges.
+    let hx = hex_at(p);
     if (globals.celestial.w > 0.5) {
-        let qf = (0.57735 * p.x - p.y / 3.0);
-        let rf = 2.0 / 3.0 * p.y;
-        let sf = -qf - rf;
-        var rq = round(qf);
-        var rr = round(rf);
-        let rs = round(sf);
-        let dq = abs(rq - qf);
-        let dr = abs(rr - rf);
-        let ds = abs(rs - sf);
-        if (dq > dr && dq > ds) {
-            rq = -rr - rs;
-        } else if (dr > ds) {
-            rr = -rq - rs;
-        }
-        let c = vec2<f32>(1.7320508 * (rq + rr / 2.0), 1.5 * rr);
-        let d = p - c;
-        // Distance to the hex edge along the three edge normals.
-        let e1 = abs(d.x) / 0.8660254;
-        let e2 = abs(0.5 * d.x + 0.8660254 * d.y) / 0.8660254;
-        let e3 = abs(-0.5 * d.x + 0.8660254 * d.y) / 0.8660254;
-        let edge = max(e1, max(e2, e3));
-        let line = smoothstep(0.93, 0.985, edge) * (1.0 - smoothstep(60.0, 200.0, dist));
+        let line = smoothstep(0.93, 0.985, hx.z) * (1.0 - smoothstep(60.0, 200.0, dist));
         col = mix(col, vec3<f32>(0.05, 0.05, 0.04), line * 0.45);
     }
+    // The inspected tile: a glowing outline just inside its edges and a
+    // faint wash, gently pulsing so it reads on any ground.
+    if (globals.select.z > 0.5 && length(hx.xy - globals.select.xy) < 0.1) {
+        let width = 0.1 + 0.08 * smoothstep(20.0, 160.0, dist);
+        let line = smoothstep(1.0 - width - 0.04, 1.0 - width, hx.z);
+        let pulse = 0.75 + 0.25 * sin(globals.eye.w * 3.0);
+        col = mix(col, vec3<f32>(1.0, 0.92, 0.55) * 1.6 * pulse, line * 0.9);
+        col = col + vec3<f32>(0.10, 0.09, 0.05) * (1.0 - line);
+    }
     return col;
+}
+
+// The hex tile containing a ground point: its center (xy) and how far
+// the point lies toward the tile's edge (z: 0 at the center, 1 on an
+// edge) — cube rounding of the fractional axial coordinates.
+fn hex_at(p: vec2<f32>) -> vec3<f32> {
+    let qf = (0.57735 * p.x - p.y / 3.0);
+    let rf = 2.0 / 3.0 * p.y;
+    let sf = -qf - rf;
+    var rq = round(qf);
+    var rr = round(rf);
+    let rs = round(sf);
+    let dq = abs(rq - qf);
+    let dr = abs(rr - rf);
+    let ds = abs(rs - sf);
+    if (dq > dr && dq > ds) {
+        rq = -rr - rs;
+    } else if (dr > ds) {
+        rr = -rq - rs;
+    }
+    let c = vec2<f32>(1.7320508 * (rq + rr / 2.0), 1.5 * rr);
+    let d = p - c;
+    // Distance to the hex edge along the three edge normals.
+    let e1 = abs(d.x) / 0.8660254;
+    let e2 = abs(0.5 * d.x + 0.8660254 * d.y) / 0.8660254;
+    let e3 = abs(-0.5 * d.x + 0.8660254 * d.y) / 0.8660254;
+    return vec3<f32>(c, max(e1, max(e2, e3)));
 }
 
 @fragment
@@ -922,6 +1038,11 @@ fn fs_particle(in: VsOut) -> @location(0) vec4<f32> {
     if (kind > 1.5 && kind < 2.5) {
         col = in.color * 2.2 * in.tau;
         a = in.tau;
+    } else if (kind > 3.5 && kind < 4.5) {
+        a = 1.0;
+    } else if (kind > 4.5) {
+        col = in.color * mix(0.25, 1.1, day) * globals.light;
+        a = in.tau * 0.45;
     }
     if (a < 0.02) {
         discard;

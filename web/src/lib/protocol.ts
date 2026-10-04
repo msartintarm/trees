@@ -101,6 +101,7 @@ export type Control =
   | { type: "look"; dyaw: number; dpitch: number }
   | { type: "act"; action: number; species: TreeSpecies; grass: GrassKind }
   | { type: "inspectTarget" }
+  | { type: "clearInspect" }
   | { type: "thirdPerson" }
   | { type: "hexColumns"; on: boolean }
   | { type: "landforms"; on: boolean }
@@ -132,6 +133,7 @@ export const CONTROL_TYPES: ReadonlySet<string> = new Set([
   "look",
   "act",
   "inspectTarget",
+  "clearInspect",
   "thirdPerson",
   "hexColumns",
   "landforms",
@@ -170,7 +172,21 @@ export type WalkSnapshot = {
   message: string;
   /** What the crosshair rests on. */
   target: string;
+  /** The region underfoot and any landmark nearby. */
+  place: string;
 };
+
+/** A place name drawn over the map (backing-store pixel position). */
+export type MapLabel = { x: number; y: number; alpha: number; landmark: boolean; text: string };
+
+/** Landscape events, in the engine's `BiomeEvent` order, as the ticker
+ * announces them ("{place}" is the region it happened in). */
+export const BIOME_EVENTS = [
+  "🌼 a superbloom carpets {place} after the rains",
+  "🔥 a wildfire sweeps {place}",
+  "🪲 bark beetles erupt through {place}",
+  "🌊 the river floods {place}",
+] as const;
 
 /** Per-frame HUD payload. */
 export type StatsSnapshot = {
@@ -214,6 +230,17 @@ export type StatsSnapshot = {
   actualSpeed: number;
   /** Houses the wanderer has built. */
   houses: number;
+  /** Animals on the land: grazers in herds, wolves in packs. */
+  grazers: number;
+  wolves: number;
+  /** Region and landmark names on screen this frame. */
+  labels: MapLabel[];
+  /** Where the inspected tile is on screen (backing pixels), or null. */
+  selection: [number, number] | null;
+  /** Landscape events so far (BIOME_EVENTS order) and where the latest of
+   * each happened (region names, "" if unnamed). */
+  biomeEvents: number[];
+  eventPlaces: string[];
   walk: WalkSnapshot | null;
   /** Current map size in tiles. */
   gridWidth: number;

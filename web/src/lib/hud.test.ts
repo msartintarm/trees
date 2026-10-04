@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  cloudEventIcons,
+  newestBiomeEvent,
   clockLabel,
   cloudsText,
   deathsText,
@@ -10,6 +12,7 @@ import {
   paceLabel,
   seasonLabel,
   speedLabel,
+  statsLines,
   statsText,
   walkText,
 } from "./hud.ts";
@@ -36,7 +39,13 @@ const base: StatsSnapshot = {
   biomeSamples: [],
   flooding: false,
   houses: 0,
+  grazers: 0,
+  wolves: 0,
   walk: null,
+  labels: [],
+  selection: null,
+  biomeEvents: [0, 0, 0, 0],
+  eventPlaces: ["", "", "", ""],
   playing: true,
   selectedSpeed: 2,
   actualSpeed: 2,
@@ -73,6 +82,11 @@ test("pest outbreaks appear in the readout", () => {
 
 test("mast years show an acorn badge", () => {
   assert.equal(statsText({ ...base, mast: true }), `${HEAD} · ☀ 64% 💧 41% 🌰 · ▶ 2×`);
+});
+
+test("animals show once they arrive", () => {
+  assert.equal(statsText({ ...base, grazers: 132, wolves: 8 }), `${HEAD} · ☀ 64% 💧 41% · 🦬 132 🐺 8 · ▶ 2×`);
+  assert.equal(statsText({ ...base, grazers: 40 }), `${HEAD} · ☀ 64% 💧 41% · 🦬 40 · ▶ 2×`);
 });
 
 test("houses show once built", () => {
@@ -145,6 +159,46 @@ test("the wanderer's readout", () => {
     yearFrac: 0.4,
     message: "",
     target: "",
+    place: "",
   };
   assert.equal(walkText(w), "🧭 year 3 · mid summer · 12:00 · ⏱ 1.0 h/s · 🪵 4.3 timber · 🌊 wading");
+});
+
+test("landscape events are announced with their place", () => {
+  const a = [0, 2, 0, 1];
+  assert.equal(newestBiomeEvent(null, a, []), null);
+  assert.equal(newestBiomeEvent(a, a, []), null);
+  assert.equal(
+    newestBiomeEvent(a, [1, 2, 0, 1], ["the Amber Erg", "", "", ""]),
+    "🌼 a superbloom carpets the Amber Erg after the rains",
+  );
+  assert.equal(newestBiomeEvent(a, [0, 3, 0, 1], ["", "", "", ""]), "🔥 a wildfire sweeps the land");
+});
+
+test("the side panel stacks the readout one item per line", () => {
+  assert.deepEqual(statsLines(base), [
+    "256×256 · tick 1,234 · ▶ 2×",
+    "🌳 512 trees · 🌾 800 grass · 2,784 bare",
+    "🌿 4.8 types (local 3.1)",
+    "☀ 64% 💧 41%",
+  ]);
+  const busy = statsLines({ ...base, storms: 1, burning: 12, flooding: true, grazers: 80, wolves: 6, houses: 2, mast: true });
+  assert.deepEqual(busy.slice(3), [
+    "☀ 64% 💧 41% 🌰 mast year",
+    "⛈ 1 storm",
+    "🌊 flood",
+    "🔥 12 burning",
+    "🦬 80 grazers · 🐺 6 wolves",
+    "🏠 2 houses",
+  ]);
+});
+
+test("cloud transitions become emoji icons with their description", () => {
+  const a = [3, 1, 0, 0, 0, 4, 0, 0];
+  assert.deepEqual(cloudEventIcons(null, a), []);
+  assert.deepEqual(cloudEventIcons(a, a), []);
+  assert.deepEqual(cloudEventIcons(a, [3, 3, 0, 0, 0, 9, 0, 0]), [
+    { icon: "⛈", text: "a cumulus towered into a thunderhead" },
+    { icon: "⛈", text: "a cumulus towered into a thunderhead" },
+  ]);
 });

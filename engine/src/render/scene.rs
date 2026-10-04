@@ -59,7 +59,13 @@ pub mod stream {
     pub const SHRUBS: usize = FLOWERS + 1;
     /// Ambient motes near the viewer: pollen/dust, snow, fireflies, leaves.
     pub const PARTICLES: usize = SHRUBS + 1;
-    pub const COUNT: usize = PARTICLES + 1;
+    /// Flames on burning tiles (emissive).
+    pub const FLAMES: usize = PARTICLES + 1;
+    /// Grazing herds and wolf packs (each animal an instance, turned to
+    /// its heading via `lean`).
+    pub const GRAZERS: usize = FLAMES + 1;
+    pub const WOLVES: usize = GRAZERS + 1;
+    pub const COUNT: usize = WOLVES + 1;
 
     pub const TREES_LOD: [usize; SPECIES_COUNT] = {
         let mut a = [0; SPECIES_COUNT];
@@ -142,6 +148,57 @@ pub mod particle {
     pub const SNOW: f32 = 1.0;
     pub const FIREFLY: f32 = 2.0;
     pub const LEAF: f32 = 3.0;
+    /// Birds wheeling over their habitat (jays over oak woods, waterfowl
+    /// over wetlands).
+    pub const BIRD: f32 = 4.0;
+    /// Spray rising from a waterfall.
+    pub const SPRAY: f32 = 5.0;
+}
+
+/// Ground palettes by biome (Biome order) — art direction with a clear
+/// value structure: dark forest floors, mid-tone grasslands, pale deserts.
+const BIOME_GROUND: [[f32; 3]; crate::sim::world::BIOME_COUNT] = [
+    [0.22, 0.26, 0.20],
+    [0.50, 0.48, 0.42],
+    [0.19, 0.19, 0.14],
+    [0.27, 0.22, 0.14],
+    [0.55, 0.50, 0.30],
+    [0.62, 0.42, 0.24],
+    [0.82, 0.71, 0.52],
+];
+/// Desert ephemerals in bloom: poppy gold, lupine purple, desert-sunflower
+/// yellow, sand-verbena pink.
+const BLOOM_COLORS: [[f32; 3]; 4] = [[0.98, 0.58, 0.12], [0.56, 0.36, 0.86], [0.98, 0.86, 0.22], [0.90, 0.48, 0.70]];
+/// Arctic summer flowers on the tundra (fireweed, cottongrass).
+const TUNDRA_BLOOM: [f32; 3] = [0.82, 0.52, 0.80];
+/// Bright resprout green after a burn (the green flush).
+const GREEN_FLUSH: [f32; 3] = [0.40, 0.72, 0.20];
+/// Glacier ice.
+const ICE: [f32; 3] = [0.80, 0.88, 0.95];
+/// Flame color (over-bright: it blooms).
+const FLAME: [f32; 3] = [3.0, 1.25, 0.25];
+/// Coat colors by grazer (fauna::Grazer order) and the wolves'.
+const GRAZER_COLORS: [[f32; 3]; 6] = [
+    [0.30, 0.20, 0.13],
+    [0.72, 0.52, 0.30],
+    [0.55, 0.50, 0.44],
+    [0.52, 0.36, 0.22],
+    [0.85, 0.80, 0.70],
+    [0.25, 0.18, 0.12],
+];
+const WOLF: [f32; 3] = [0.45, 0.44, 0.42];
+
+/// Smoothstep on [a, b].
+fn smooth01(a: f64, b: f64, x: f64) -> f64 {
+    smoothstep((x - a) / (b - a))
+}
+
+/// A local season phase: cold sites have a shorter growing season (later
+/// spring, earlier autumn), so the seasons sweep across the land as a
+/// wave — autumn color spreads down from the peaks and the north.
+fn local_phase(phase: f32, temp: f64) -> f32 {
+    let g = (1.0 + 1.2 * (temp - 0.5)).clamp(0.55, 1.4) as f32;
+    (0.4 + (phase.rem_euclid(1.0) - 0.4) / g).clamp(0.0, 0.999)
 }
 
 /// A tree's position jitter within its tile when drawn with a focus (so
@@ -384,6 +441,9 @@ pub struct FrameInstances {
     pub shrubs: Vec<Instance>,
     /// Ambient motes (see `particle` for the encoding).
     pub particles: Vec<Instance>,
+    pub flames: Vec<Instance>,
+    pub grazers: Vec<Instance>,
+    pub wolves: Vec<Instance>,
 }
 
 impl FrameInstances {
@@ -407,6 +467,9 @@ impl FrameInstances {
             stream::FLOWERS => &self.flowers,
             stream::SHRUBS => &self.shrubs,
             stream::PARTICLES => &self.particles,
+            stream::FLAMES => &self.flames,
+            stream::GRAZERS => &self.grazers,
+            stream::WOLVES => &self.wolves,
             stream::MUSHROOMS => &self.mushrooms,
             stream::BOLTS => &self.bolts,
             stream::ROOTS => &self.roots,
@@ -622,7 +685,14 @@ pub fn build_scene(
         }
 
         let burning = world.burning(i);
-        let shade = 0.92 + 0.16 * cell_noise(i, 1);
+        // Per-tile variation is close-up texture: it fades with distance so
+        // the land reads as big shapes from afar.
+        let jitter = focus.map_or(1.0, |_| 1.0 - smooth01(30.0, 150.0, dist) as f32);
+        let shade = 1.0 + (0.16 * cell_noise(i, 1) - 0.08) * jitter;
+        // With a viewer: biome-aware art direction (computed once here).
+        let biome = focus.map(|_| world.biome(i));
+        let temp = world.temperature(i);
+        let phase = if focus.is_some() { local_phase(view.season_phase, temp) } else { view.season_phase };
         let soil = if state == Cell::Bare { SOIL } else { SOIL_UNDER_PLANT };
         // Fertility reads as the soil deepening toward dark loam.
         let fert = world.nutrient_ratio(i);
@@ -637,6 +707,10 @@ pub fn build_scene(
         let rock = ((0.45 - world.soil_depth(i)) / 0.45).clamp(0.0, 1.0) as f32;
         let base = lerp3(base, ROCK, rock * 0.7);
         let base = lerp3(base, NEEDLES, world.litter(i) * 0.45);
+        let base = match biome {
+            Some(b) => lerp3(base, BIOME_GROUND[b as usize], 0.5),
+            None => base,
+        };
         let ash = world.ash_ratio(i);
         let mut ground = if burning {
             EMBER
@@ -671,6 +745,30 @@ pub fn build_scene(
         if snow > 0.0 {
             ground = lerp3(ground, SNOW, snow * 0.85);
         }
+        // Glacier ice: a blue-white sheet, always snow-covered.
+        let ice = world.is_ice(i);
+        let snow = if ice { 1.0 } else { snow };
+        if ice {
+            ground = ICE;
+        }
+        // The superbloom: desert ephemerals carpet rain-soaked ground in
+        // drifts of color (patches, as seed banks are patchy).
+        let bloom = world.bloom(i);
+        if bloom > 0.0 && !burning {
+            let k = (crate::render::surface::noise(x / 9.0, y / 9.0, 77) * 4.0) as usize;
+            let density = smooth01(0.25, 0.6, crate::render::surface::noise(x / 4.0, y / 4.0, 78)) as f32;
+            ground = lerp3(ground, BLOOM_COLORS[k.min(3)], 0.75 * bloom * density);
+        }
+        // Tundra summer: a brief flush of flowers.
+        let summer = view.season_amp > 0.5 && (0.3..0.48).contains(&phase);
+        if summer && biome == Some(crate::sim::world::Biome::Tundra) && snow < 0.3 {
+            let density = smooth01(0.4, 0.75, crate::render::surface::noise(x / 3.0, y / 3.0, 79)) as f32;
+            ground = lerp3(ground, TUNDRA_BLOOM, 0.4 * density);
+        }
+        // The green flush: grass resprouting on fresh ash.
+        if state == Cell::Grass && ash > 0.0 && !burning && focus.is_some() {
+            ground = lerp3(ground, GREEN_FLUSH, 0.5 * ash);
+        }
         // Rivers are open water; a flood spreads muddy water over the
         // floodplain.
         if world.is_channel(i) {
@@ -693,6 +791,8 @@ pub fn build_scene(
         // parched open ground cracks.
         let gloss = if world.is_channel(i) {
             0.8
+        } else if ice {
+            0.5
         } else if wet > 0.0 || world.water_table(i) > 0.75 {
             (wet * 0.8).max((world.water_table(i) - 0.75) * 2.0)
         } else if state != Cell::Tree && snow == 0.0 {
@@ -711,13 +811,23 @@ pub fn build_scene(
         // canopy occlusion (prev_scale), open water (slim), grass cover and
         // fire (lean).
         let canopy_ao = (1.0 - 0.07 * tree_nbrs as f32 - if state == Cell::Tree { 0.12 } else { 0.0 }).max(0.45);
+        // Spring high water spreads across the wetlands as a mirror sheet.
+        let spring_flood = if biome == Some(crate::sim::world::Biome::Wetland) && view.season_amp > 0.5 {
+            let springness = 1.0 - (view.season_phase.rem_euclid(1.0) - 0.08).abs() / 0.14;
+            (springness.clamp(0.0, 1.0) * ((world.water_table(i) - 0.5) / 0.3).clamp(0.0, 1.0)) * 0.65
+        } else {
+            0.0
+        };
         let water = if world.is_channel(i) {
             1.0
         } else if world.inundated(i) {
             0.7
         } else {
-            0.0
+            spring_flood
         };
+        if spring_flood > 0.2 {
+            ground = lerp3(ground, MARSH, spring_flood * 0.6);
+        }
         out.ground.push(Instance {
             pos,
             scale: snow,
@@ -741,6 +851,20 @@ pub fn build_scene(
 
         if !vis {
             continue;
+        }
+        // Flames on burning tiles: a fire front reads as a glowing,
+        // flickering line (the shader animates them).
+        if burning && focus.is_some() {
+            let s = (0.7 + 0.5 * cell_noise(i, 90)) * if state == Cell::Tree { 1.8 } else { 1.0 };
+            out.flames.push(Instance {
+                pos: tree_pos,
+                scale: s,
+                prev_scale: s,
+                color: FLAME,
+                slim: 0.0,
+                lean: [0.0, 0.0],
+                gloss: cell_noise(i, 91),
+            });
         }
         // Standing dead: a husk shrinks from the exact size the plant died
         // at (growth curve + wilt, same per-cell noise) down to nothing, so
@@ -873,7 +997,23 @@ pub fn build_scene(
             Cell::Tree => {
                 let sp = world.species(i);
                 let tr = sp.traits();
-                let mature = 0.8 + 0.4 * cell_noise(i, 2) as f64;
+                // Veterans keep growing for centuries; the great tree towers.
+                let veteran = if world.is_elder(i) {
+                    2.6
+                } else if world.is_veteran(i, tick) {
+                    let m = world.params().tree_maturity_age.max(1) as f64 * tr.maturity;
+                    1.0 + 0.9 * ((age as f64 - 2.0 * m) / (8.0 * m)).clamp(0.0, 1.0)
+                } else {
+                    1.0
+                };
+                // Krummholz: at the treeline trees grow stunted, low and
+                // wind-flagged.
+                let krumm = if world.params().climate_zones > 0.0 && focus.is_some() {
+                    1.0 - smooth01(crate::sim::world::TREELINE_T, crate::sim::world::TREELINE_T + 0.1, temp)
+                } else {
+                    0.0
+                };
+                let mature = (0.8 + 0.4 * cell_noise(i, 2) as f64) * veteran * (1.0 - 0.55 * krumm);
                 let mean_life = params.tree_mean_life.max(1) as f64 * tr.mean_life;
                 let tint = (age as f64 / mean_life).min(1.0) as f32;
                 // Drought browning (willows visibly suffer), plus a
@@ -895,7 +1035,7 @@ pub fn build_scene(
                     0.0
                 };
                 // Seasons: deciduous crowns flush, color, and go bare.
-                let (leafy, autumn, flush) = phenology(view.season_phase);
+                let (leafy, autumn, flush) = phenology(phase);
                 let decid = tr.deciduous as f32 * view.season_amp;
                 let bare = (1.0 - leafy) * decid;
                 let crown = (1.0 - 0.3 * pest as f64) * (1.0 - 0.3 * starving as f64) * (1.0 - 0.25 * bare as f64);
@@ -917,7 +1057,12 @@ pub fn build_scene(
                         }
                     }
                 }
-                let lean = [push[0] * LEAN_PER_NEIGHBOR, push[1] * LEAN_PER_NEIGHBOR];
+                let mut lean = [push[0] * LEAN_PER_NEIGHBOR, push[1] * LEAN_PER_NEIGHBOR];
+                if krumm > 0.0 {
+                    let wd = if world.params().map_design > 0.0 { world.prevailing_wind() } else { world.wind_at(tick).0 };
+                    lean[0] += (wd[0] * 0.3 * krumm) as f32;
+                    lean[1] += (wd[1] * 0.3 * krumm) as f32;
+                }
                 if view.roots {
                     // Root system: taproot reach by rooting depth; blue
                     // where it taps the groundwater, brown where it only
@@ -983,7 +1128,7 @@ pub fn build_scene(
                 let scaled = |a: u64| {
                     (grow_scale(a, GRASS_GROW_TICKS, mature) as f64 * wilt_mult(brown)) as f32
                 };
-                let dormant = winter(view.season_phase) * view.season_amp;
+                let dormant = winter(phase) * view.season_amp;
                 if dist > focus.map_or(f64::INFINITY, |f| f.grass_far) {
                     continue;
                 }
@@ -991,7 +1136,9 @@ pub fn build_scene(
                     SCORCH
                 } else {
                     let c = lerp3(lerp3(GRASS_YOUNG[kind], GRASS_OLD, tint), GRASS_WILT, brown as f32);
-                    lerp3(c, STRAW, dormant * 0.7)
+                    let c = lerp3(c, STRAW, dormant * 0.7);
+                    // Fresh regrowth on ash is a vivid green.
+                    if focus.is_some() { lerp3(c, GREEN_FLUSH, 0.6 * ash) } else { c }
                 };
                 let (s0, s1) = (scaled(age), scaled(age.saturating_sub(1)));
                 out.grass[kind].push(Instance { pos, scale: s0, prev_scale: s1, slim: 0.0, lean: [0.0, 0.0], gloss: 0.0, color });
@@ -1072,6 +1219,48 @@ pub fn build_scene(
         }
         out.houses.push(Instance { pos: p, scale: 1.0, prev_scale: 1.0, color: HOUSE_WALL, slim: 0.0, lean: [0.0, 0.0], gloss: SURFACE_WOOD });
     }
+    // The herds and packs, gliding between their yearly positions: each
+    // animal is an instance scattered about the herd's center, facing the
+    // way the herd is heading.
+    if let Some(f) = focus {
+        let fauna = world.fauna();
+        let a = alpha as f64;
+        let place = |prev: [f64; 2], pos: [f64; 2]| [prev[0] + (pos[0] - prev[0]) * a, prev[1] + (pos[1] - prev[1]) * a];
+        let animals = |center: [f64; 2], heading: f64, count: usize, spread: f64, id: u32, color: [f32; 3], size: f32, dest: &mut Vec<Instance>| {
+            if !in_view(&f.view_proj, [center[0], center[1], surface.height_at(center[0], center[1]) + 1.0], spread + 2.0) {
+                return;
+            }
+            for k in 0..count {
+                let key = id as usize * 977 + k;
+                let ang = cell_noise(key, 101) as f64 * std::f64::consts::TAU;
+                let r = spread * (cell_noise(key, 102) as f64).sqrt();
+                let (px, py) = (center[0] + r * ang.cos(), center[1] + r * ang.sin());
+                let wander = (cell_noise(key, 103) as f64 - 0.5) * 0.8;
+                let h = heading + wander;
+                let shade = 0.85 + 0.3 * cell_noise(key, 104);
+                let s = size * (0.85 + 0.3 * cell_noise(key, 105));
+                dest.push(Instance {
+                    pos: [px as f32, py as f32, surface.height_at(px, py) as f32],
+                    scale: s,
+                    prev_scale: s,
+                    color: color.map(|c| c * shade),
+                    slim: cell_noise(key, 106), // gait phase
+                    lean: [h.cos() as f32, h.sin() as f32],
+                    gloss: SURFACE_OTHER,
+                });
+            }
+        };
+        for h in &fauna.herds {
+            let n = (h.size / 2.0).round().clamp(2.0, 40.0) as usize;
+            let c = place(h.prev, h.pos);
+            animals(c, h.heading, n, 1.2 + 0.25 * h.size.sqrt(), h.id, GRAZER_COLORS[h.kind as usize], 1.0, &mut out.grazers);
+        }
+        for p in &fauna.packs {
+            let n = p.size.round().clamp(2.0, 12.0) as usize;
+            let c = place(p.prev, p.pos);
+            animals(c, p.heading, n, 1.5, p.id + 50_000, WOLF, 0.7, &mut out.wolves);
+        }
+    }
     // Ambient motes around the viewer, animated in the shader: pollen and
     // dust on dry windy ground, blowing snow, fireflies over summer wetlands
     // and woods at dusk, falling leaves under autumn crowns.
@@ -1107,6 +1296,23 @@ pub fn build_scene(
             } else {
                 None
             };
+            // Birds over their habitat: jays working the oak woods in
+            // autumn (caching acorns), waterfowl over open wetland water.
+            let bird = (world.state(i) == Cell::Tree && world.species(i) == crate::sim::world::Species::Oak && (autumn || !seasonal))
+                || (biome == 0 && world.water_table(i) > 0.7);
+            if bird && cell_noise(i, 95) < 0.04 && out.particles.len() < 1500 {
+                for b in 0..4u64 {
+                    out.particles.push(Instance {
+                        pos: [x as f32, y as f32, z + 3.0 + 1.5 * cell_noise(i, 96 + b)],
+                        scale: 0.09,
+                        prev_scale: 0.09,
+                        color: if biome == 0 { [0.92, 0.92, 0.88] } else { [0.30, 0.38, 0.62] },
+                        slim: particle::BIRD,
+                        lean: [(wind[0] * speed) as f32, (wind[1] * speed) as f32],
+                        gloss: cell_noise(i, 97 + b),
+                    });
+                }
+            }
             if let Some((k, p, color, size)) = kind {
                 for n in 0..2u64 {
                     if cell_noise(i, 81 + n) >= p {
@@ -1124,6 +1330,32 @@ pub fn build_scene(
                         gloss: cell_noise(i, 89 + n),
                     });
                 }
+            }
+        }
+    }
+    // Spray drifting up from the waterfall.
+    if let Some(f) = focus.filter(|f| f.particles > 0.0) {
+        for (kind, tile, _) in world.landmarks() {
+            if kind != crate::sim::terrain::LandmarkKind::Waterfall {
+                continue;
+            }
+            let (x, y) = grid.center(tile);
+            if (x - f.center[0]).powi(2) + (y - f.center[1]).powi(2) > (2.0 * f.particles).powi(2) {
+                continue;
+            }
+            let z = surface.tile_height(tile);
+            for k in 0..60usize {
+                let key = tile * 61 + k;
+                let (ox, oy) = (cell_noise(key, 110) as f64 - 0.5, cell_noise(key, 111) as f64 - 0.5);
+                out.particles.push(Instance {
+                    pos: [(x + 2.0 * ox) as f32, (y + 2.0 * oy) as f32, z - 0.6 + cell_noise(key, 112)],
+                    scale: 0.07,
+                    prev_scale: 0.07,
+                    color: [0.92, 0.95, 1.0],
+                    slim: particle::SPRAY,
+                    lean: [0.0, 0.0],
+                    gloss: cell_noise(key, 113),
+                });
             }
         }
     }
@@ -1838,5 +2070,46 @@ mod tests {
         let leaves = |v: &View| build_scene(&w, 50, 0.0, v, &surface, Some(&f)).particles.iter().filter(|p| p.slim == particle::LEAF).count();
         assert!(leaves(&autumn) > 10, "autumn leaves: {}", leaves(&autumn));
         assert_eq!(leaves(&spring), 0);
+    }
+
+    #[test]
+    fn herds_wolves_and_flames_render_near_a_viewer() {
+        use crate::sim::world::{Brush, Params};
+        let mut w = World::with_params(25, Params { width: 96, height: 96, seed_grass_p: 0.5, seed_tree_p: 0.01, ..Params::default() });
+        let mut t = 0;
+        while w.fauna().herds.is_empty() || w.fauna().packs.is_empty() {
+            t += 1;
+            w.step(t);
+            assert!(t < 2000, "no herds and packs arrived");
+        }
+        let surface = Surface::flat_from(&w);
+        let h = w.fauna().herds[0].pos;
+        let f = focus_on(&w, [h[0] - 8.0, h[1], 6.0], [1.0, 0.0, -0.5]);
+        let frame = build_scene(&w, t, 0.5, &View::default(), &surface, Some(&f));
+        assert!(!frame.grazers.is_empty(), "the herd's animals are drawn");
+        assert!(frame.grazers.iter().all(|a| (a.lean[0].powi(2) + a.lean[1].powi(2) - 1.0).abs() < 1e-3), "facing a heading");
+        // A fire in view burns with flames.
+        let c = w.grid().pick(h[0], h[1]).unwrap();
+        w.paint(c, Brush::Grass, 0);
+        w.paint(c, Brush::Fire, t);
+        let frame = build_scene(&w, t, 0.5, &View::default(), &surface, Some(&f));
+        assert!(!frame.flames.is_empty());
+        assert!(build_instances(&w, t, 0.5).flames.is_empty(), "no flames without a viewer");
+        let p = w.fauna().packs[0].pos;
+        let f = focus_on(&w, [p[0] - 8.0, p[1], 6.0], [1.0, 0.0, -0.5]);
+        assert!(!build_scene(&w, t, 0.5, &View::default(), &surface, Some(&f)).wolves.is_empty());
+    }
+
+    #[test]
+    fn seasons_sweep_down_from_the_cold() {
+        // At one moment of early autumn the cold sites have turned and the
+        // warm ones haven't yet.
+        let p = 0.6;
+        let cold = phenology(local_phase(p, 0.2));
+        let warm = phenology(local_phase(p, 0.8));
+        assert!(cold.1 > warm.1 + 0.2, "autumn color cold {:.2} vs warm {:.2}", cold.1, warm.1);
+        // And spring arrives later in the cold.
+        let s = 0.12;
+        assert!(phenology(local_phase(s, 0.2)).0 < phenology(local_phase(s, 0.8)).0);
     }
 }

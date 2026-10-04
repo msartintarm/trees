@@ -432,6 +432,55 @@ sprinting faster, holding R rests through years; actions are time-lapses
 years). Sim: `DeathCause::Logged` (stumps), `built` tiles where nothing
 grows.
 
+## P30 — Order: patterns, a designed map, biome events, fauna ✅
+Goal: the land should read as intentional, not as noise — through real
+mechanisms. Four params (0 = previous behavior; tests/landscape.rs pins
+P25–P28 with them off, tests/patterns.rs pins P30):
+- `patterns` — self-organization: the seed shadow concentrates near the
+  parent (renormalized, so fecundity is unchanged), stress-gradient
+  facilitation (seedlings beside adults survive harsh climates), isolated
+  long-distance seedlings lack mycorrhizae, veterans (6%) escape most
+  background mortality and keep growing, Klausmeier runoff routing on
+  arid slopes (bare crust sheds, vegetation catches — tiger bush), fuel
+  age limits fire spread (burn mosaics), bark beetles fly two rings.
+  Measured (128², seed 7): stand aggregation 1.48 → 1.97, γ 4.82 → 5.26
+  with patterns alone.
+- `map_design` (on reseed) — an onshore prevailing wind, a meandering
+  mountain spine across it, rain from moisture advection with orographic
+  lift (wet windward slopes, a rain shadow in the lee), a coastal plain and
+  a lee plateau; landmarks: a glacier (cirque + tongue) on the highest
+  peak, a crater lake with its rim, a spring-fed oasis in the driest
+  lowland, the steepest waterfall, and a great tree (an ancient veteran).
+  Regions named from coarse biome components (`sim/places.rs`), unique per
+  map. At 256²: windward savanna/forest, tundra spine, 32–37% desert in
+  the lee.
+- `events` — superbloom: a soaking rain on arid ground wakes the
+  ephemerals (annual germination ×7, a season of color); landscape events
+  (superbloom, wildfire, beetle wave, flood) are recorded with where they
+  happened and announced in the ticker by region name.
+- `fauna` — herds (bison/antelope/caribou/elk/oryx/moose by biome) arrive
+  once there is grass, trek to the best pasture within reach of water and
+  away from wolves, grow and decline with forage per head; packs follow
+  and hunt them (discrete predator–prey); grazing and browsing follow the
+  herds (60%; resident wildlife keeps the rest), and fear spares saplings
+  where packs roam.
+Also: warm + wet is now forest, not savanna (Whittaker). Render: biome
+ground palettes with a value structure, per-tile variation that fades with
+distance, softer cellular ground, veterans and the towering great tree,
+wind-flagged krummholz at the treeline, phenology as a wave (cold sites
+turn first), superbloom carpets, tundra summer bloom, spring flood sheets
+in wetlands, the green flush on ash, flames on fire fronts, glacier ice,
+waterfall spray, animals with a walking gait, birds over oak woods and
+wetlands, cauliflower-turreted thunderheads, and place-name labels over
+the map (landmarks first, overlap-culled). The game layer (goals, journal,
+house consequences) is deliberately deferred.
+
+## P31 — Auto-planting ✅
+`auto_plant` (plants per tick, 0 = off; outside preset matching like the
+map size): each due planting tries up to 8 random tiles for open ground and
+sets a uniformly random tree species or grass kind there (`Stream::AutoPlant`,
+so runs stay reproducible). 🎲 toggle in the panel, rate under Parameters.
+
 ## Ideas / not done
 - Rainbows (the sun can now sit low opposite a rain shaft)
 - Terrain geometric LOD (the lattice mesh is cheap enough so far) and

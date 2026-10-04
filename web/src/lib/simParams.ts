@@ -34,6 +34,12 @@ export type SimParams = {
   seasons: number;
   cloudDynamics: number;
   biomes: number;
+  patterns: number;
+  mapDesign: number;
+  events: number;
+  fauna: number;
+  /** Auto-planting: random plants set down per tick (0 = off). */
+  autoPlant: number;
   seedTreeP: number;
   seedGrassP: number;
   /** Map size in tiles per side (applies on Reseed). */
@@ -72,6 +78,11 @@ export const DEFAULT_PARAMS: SimParams = {
   seasons: 1.0,
   cloudDynamics: 1.0,
   biomes: 1.0,
+  patterns: 1.0,
+  mapDesign: 1.0,
+  events: 1.0,
+  fauna: 1.0,
+  autoPlant: 0,
   seedTreeP: 0.0,
   seedGrassP: 0.0,
   width: 256,
@@ -88,7 +99,7 @@ export const PRESETS: Preset[] = [
   {
     key: "defaults",
     label: "Savanna parkland",
-    hint: "climate zones from lowland acacia & bunchgrass savanna up through pine to alpine meadow, willows along the rivers (~4.3–5 effective types; oak scarce)",
+    hint: "a designed continent: wet windward coast, a snowy mountain spine with its glacier, a rain-shadow desert in the lee; named regions, herds and wolves (~5.8 effective types at 256²)",
     params: DEFAULT_PARAMS,
   },
   {
@@ -125,7 +136,7 @@ export const PRESETS: Preset[] = [
     key: "flat-plain",
     label: "Flat plain",
     hint: "no relief, rivers, climate zones, grazers, or grass types: nothing to sort by (~2.5 effective types)",
-    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0, physiology: 0, seasons: 0, cloudDynamics: 0, biomes: 0 },
+    params: { ...DEFAULT_PARAMS, terrain: 0, grassNiches: 0, climateZones: 0, rivers: 0, grazing: 0, physiology: 0, seasons: 0, cloudDynamics: 0, biomes: 0, patterns: 0, mapDesign: 0, events: 0, fauna: 0 },
   },
   {
     key: "moist-forest",
@@ -147,10 +158,13 @@ export const PRESETS: Preset[] = [
   },
 ];
 
-/** Map size is independent of the ecology: presets neither set nor match
- * it (`matchingPreset` returns the preset matching every other field, or
- * null for a custom mix). */
-const MAP_KEYS: ReadonlySet<keyof SimParams> = new Set(["width", "height"]);
+/** Map size and auto-planting are the player's, not the ecology's:
+ * presets neither set nor match them (`matchingPreset` returns the preset
+ * matching every other field, or null for a custom mix). */
+const MAP_KEYS: ReadonlySet<keyof SimParams> = new Set(["width", "height", "autoPlant"]);
+
+/** The auto-plant rate the toggle switches on to when none was set. */
+export const AUTO_PLANT_DEFAULT = 1;
 
 export function matchingPreset(params: SimParams): string | null {
   const same = (a: SimParams, b: SimParams) =>
@@ -160,14 +174,15 @@ export function matchingPreset(params: SimParams): string | null {
 
 /** A preset's ecology applied onto the current params, keeping the map size. */
 export function applyPreset(preset: Preset, current: SimParams): SimParams {
-  return { ...preset.params, width: current.width, height: current.height };
+  return { ...preset.params, width: current.width, height: current.height, autoPlant: current.autoPlant };
 }
 
 export type ParamField = {
   key: keyof SimParams;
   label: string;
-  /** percent: stored as 0..1, displayed as 0..100. int: stored as-is. */
-  kind: "percent" | "int";
+  /** percent: stored as 0..1, displayed as 0..100. int: stored as-is,
+   * rounded. number: stored as-is. */
+  kind: "percent" | "int" | "number";
   min: number; // in display units
   max: number;
   step: number;
@@ -206,6 +221,11 @@ export const PARAM_FIELDS: ParamField[] = [
   { key: "seasons", label: "Seasons %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "cloudDynamics", label: "Dynamic clouds %", kind: "percent", min: 0, max: 100, step: 10 },
   { key: "biomes", label: "Biomes (gradients + biome plants) %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "patterns", label: "Vegetation patterns %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "mapDesign", label: "Designed map (spine, rain shadow, landmarks) %", kind: "percent", min: 0, max: 100, step: 10, appliesOnReseed: true },
+  { key: "events", label: "Biome events (superbloom) %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "fauna", label: "Herds & wolves %", kind: "percent", min: 0, max: 100, step: 10 },
+  { key: "autoPlant", label: "Auto-plant (plants/tick)", kind: "number", min: 0, max: 100, step: 0.1 },
   { key: "seedTreeP", label: "Seed trees %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "seedGrassP", label: "Seed grass %", kind: "percent", min: 0, max: 100, step: 0.5, appliesOnReseed: true },
   { key: "width", label: "Map width (tiles)", kind: "int", min: 8, max: 512, step: 8, appliesOnReseed: true },
